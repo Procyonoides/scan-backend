@@ -4,7 +4,10 @@ const verifyToken = (req, res, next) => {
   const token = req.headers['authorization']?.split(' ')[1];
   
   if (!token) {
-    return res.status(401).json({ error: 'No token provided' });
+    return res.status(401).json({ 
+      success: false,
+      error: 'No token provided' 
+    });
   }
 
   try {
@@ -12,14 +15,20 @@ const verifyToken = (req, res, next) => {
     req.user = decoded;
     next();
   } catch (err) {
-    res.status(403).json({ error: 'Invalid token' });
+    res.status(403).json({ 
+      success: false,
+      error: 'Invalid token' 
+    });
   }
 };
 
 const verifyRole = (roles) => {
   return (req, res, next) => {
-    if (!roles.includes(req.user.role)) {
-      return res.status(403).json({ error: 'Insufficient permissions' });
+    if (!roles.includes(req.user.position)) {
+      return res.status(403).json({ 
+        success: false,
+        error: 'Insufficient permissions' 
+      });
     }
     next();
   };

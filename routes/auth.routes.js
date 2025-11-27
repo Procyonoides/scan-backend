@@ -1,16 +1,13 @@
 const express = require('express');
 const router = express.Router();
-const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { query } = require('../config/database');
-const { loginValidation } = require('../middleware/validation.middleware');
 
 /**
  * Role-based permissions mapping
  */
 const rolePermissions = {
-  'SERVER': ['read_all', 'write_all', 'delete_all', 'admin', 'manage_users', 'manage_master_data'],
-  'IT': ['read_all', 'write_all', 'delete_all', 'manage_users', 'manage_master_data'],
+  'IT': ['read_all', 'write_all', 'delete_all', 'admin', 'manage_users', 'manage_master_data'],
   'MANAGEMENT': ['read_all', 'view_reports'],
   'RECEIVING': ['read', 'receive_scan', 'view_stock'],
   'SHIPPING': ['read', 'shipping_scan', 'view_stock']
@@ -18,97 +15,130 @@ const rolePermissions = {
 
 /**
  * POST /api/auth/login
- * Login endpoint dengan role-based response
+ * Login endpoint dengan plain text password
  */
-router.post('/login', loginValidation, async (req, res) => {
+router.post('/login', async (req, res) => {
   try {
     const { username, password } = req.body;
 
+    // Validasi manual
+    if (!username || !password) {
+      console.log('❌ Username atau password kosong');
+      return res.status(400).json({ 
+        success: false,
+        error: 'Username dan password harus diisi'
+      });
+    }
+
+    console.log(`🔐 Login attempt: ${username}`);
+
     // Cari user di database
     const result = await query(
-      'SELECT user_id, username, password, role, full_name, email FROM dbo.users WHERE username = @username AND status = @status',
-      { username, status: 'ACTIVE' }
+      `SELECT id_user, username, password, position, description
+       FROM dbo.users 
+       WHERE username = @username`,
+      { username }
     );
 
     if (result.recordset.length === 0) {
-      return res.status(401).json({ error: 'Invalid credentials' });
+      console.log(`❌ User tidak ditemukan: ${username}`);
+      return res.status(401).json({ 
+        success: false,
+        error: 'Invalid username or password'
+      });
     }
 
     const user = result.recordset[0];
 
-    // Verify password
-    const isPasswordValid = await bcrypt.compare(password, user.password);
+    console.log(`✅ User found: ${user.username}, Position: ${user.position}`);
 
-    if (!isPasswordValid) {
-      return res.status(401).json({ error: 'Invalid credentials' });
+    // Verify password - Plain text comparison
+    if (password !== user.password) {
+      console.log(`❌ Password mismatch for user: ${username}`);
+      return res.status(401).json({ 
+        success: false,
+        error: 'Invalid username or password' 
+      });
     }
+
+    console.log(`✅ Password valid for user: ${username}`);
 
     // Generate JWT token
     const token = jwt.sign(
       { 
-        user_id: user.user_id, 
+        id_user: user.id_user, 
         username: user.username, 
-        role: user.role 
+        position: user.position 
       },
       process.env.JWT_SECRET,
-      { expiresIn: '12h' } // Changed from 24h untuk security
+      { expiresIn: '12h' }
     );
 
-    // Update last_login
-    await query(
-      'UPDATE dbo.users SET last_login = GETDATE() WHERE user_id = @user_id',
-      { user_id: user.user_id }
-    );
+    console.log(`✅ Token generated for user: ${username}`);
 
     // Prepare response dengan permissions
-    res.json({
+    const responseData = {
+      success: true,
       token,
       user: {
-        user_id: user.user_id,
+        id_user: user.id_user,
         username: user.username,
-        full_name: user.full_name,
-        email: user.email,
-        role: user.role,
-        permissions: rolePermissions[user.role] || []
+        position: user.position,
+        description: user.description,
+        permissions: rolePermissions[user.position] || []
       }
-    });
+    };
+
+    console.log(`✅ Login successful for user: ${username}\n`);
+    res.json(responseData);
 
   } catch (err) {
-    console.error('Login error:', err);
-    res.status(500).json({ error: 'Login failed' });
+    console.error('❌ Login error:', err);
+    res.status(500).json({ 
+      success: false,
+      error: 'Login failed',
+      message: err.message 
+    });
   }
 });
 
 /**
  * POST /api/auth/refresh
- * Refresh token endpoint (untuk future implementation)
+ * Refresh token endpoint
  */
 router.post('/refresh', (req, res) => {
   try {
     const token = req.headers['authorization']?.split(' ')[1];
     
     if (!token) {
-      return res.status(401).json({ error: 'No token provided' });
+      return res.status(401).json({ 
+        success: false,
+        error: 'No token provided' 
+      });
     }
 
-    // Verify token (even if expired)
     const decoded = jwt.verify(token, process.env.JWT_SECRET, { ignoreExpiration: true });
     
-    // Generate new token
     const newToken = jwt.sign(
       { 
-        user_id: decoded.user_id, 
+        id_user: decoded.id_user, 
         username: decoded.username, 
-        role: decoded.role 
+        position: decoded.position 
       },
       process.env.JWT_SECRET,
       { expiresIn: '12h' }
     );
 
-    res.json({ token: newToken });
+    res.json({ 
+      success: true,
+      token: newToken 
+    });
 
   } catch (err) {
-    res.status(401).json({ error: 'Invalid token' });
+    res.status(401).json({ 
+      success: false,
+      error: 'Invalid token' 
+    });
   }
 });
 
@@ -121,14 +151,25 @@ router.get('/verify', (req, res) => {
     const token = req.headers['authorization']?.split(' ')[1];
     
     if (!token) {
-      return res.status(401).json({ valid: false, error: 'No token provided' });
+      return res.status(401).json({ 
+        success: false,
+        valid: false, 
+        error: 'No token provided' 
+      });
     }
 
     jwt.verify(token, process.env.JWT_SECRET);
-    res.json({ valid: true });
+    res.json({ 
+      success: true,
+      valid: true 
+    });
 
   } catch (err) {
-    res.status(401).json({ valid: false, error: 'Invalid or expired token' });
+    res.status(401).json({ 
+      success: false,
+      valid: false, 
+      error: 'Invalid or expired token' 
+    });
   }
 });
 
