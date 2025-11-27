@@ -5,13 +5,13 @@ const { connectDB } = require('./config/database');
 
 // Import routes
 const authRoutes = require('./routes/auth.routes');
-const stockRoutes = require('./routes/stock');
-const receivingRoutes = require('./routes/receiving');
-const shippingRoutes = require('./routes/shipping');
-const reportRoutes = require('./routes/report');
-const masterDataRoutes = require('./routes/masterData');
-const transactionRoutes = require('./routes/transaction');
-const userRoutes = require('./routes/user');
+const stockRoutes = require('./routes/stock.routes');
+const receivingRoutes = require('./routes/receiving.routes');
+const shippingRoutes = require('./routes/shipping.routes');
+const reportRoutes = require('./routes/report.routes');
+const masterDataRoutes = require('./routes/masterData.routes');
+const transactionRoutes = require('./routes/transaction.routes');
+const userRoutes = require('./routes/user.routes');
 
 const app = express();
 
