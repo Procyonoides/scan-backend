@@ -2,35 +2,46 @@ const express = require('express');
 const router = express.Router();
 const { query } = require('../config/database');
 const { verifyToken, verifyRole } = require('../middleware/auth.middleware');
-const bcrypt = require('bcryptjs');
-const { 
-  createUserValidation, 
-  updateUserValidation 
-} = require('../middleware/validation.middleware');
 
 /**
  * GET /api/users
- * Get all users (SERVER, IT only)
+ * Get all users (IT only) - Updated to work with current database schema
  */
-router.get('/', verifyToken, verifyRole(['SERVER', 'IT']), async (req, res) => {
+router.get('/', verifyToken, verifyRole(['IT']), async (req, res) => {
   try {
+    console.log('📋 Fetching all users...');
+    
     const result = await query(`
       SELECT 
-        user_id, 
-        username, 
-        email, 
-        full_name, 
-        role, 
-        status,
-        last_login,
-        CONVERT(varchar, created_at, 120) as created_at
+        id_user,
+        username,
+        position,
+        description
       FROM dbo.users
-      ORDER BY user_id DESC
+      ORDER BY id_user DESC
     `);
-    res.json(result.recordset);
+    
+    console.log(`✅ Found ${result.recordset.length} users`);
+    
+    // Transform data to include status (default ACTIVE)
+    const users = result.recordset.map(user => ({
+      id_user: user.id_user,
+      user_id: user.id_user, // Add alias for compatibility
+      username: user.username,
+      position: user.position,
+      description: user.description,
+      email: null, // Not in current schema
+      full_name: null, // Not in current schema
+      status: 'ACTIVE' // Default status
+    }));
+    
+    res.json(users);
   } catch (err) {
-    console.error('Get users error:', err);
-    res.status(500).json({ error: 'Failed to fetch users' });
+    console.error('❌ Get users error:', err);
+    res.status(500).json({ 
+      error: 'Failed to fetch users',
+      message: err.message 
+    });
   }
 });
 
@@ -38,46 +49,74 @@ router.get('/', verifyToken, verifyRole(['SERVER', 'IT']), async (req, res) => {
  * GET /api/users/:id
  * Get single user by ID
  */
-router.get('/:id', verifyToken, verifyRole(['SERVER', 'IT']), async (req, res) => {
+router.get('/:id', verifyToken, verifyRole(['IT']), async (req, res) => {
   try {
     const { id } = req.params;
+    console.log(`📋 Fetching user ID: ${id}`);
 
     const result = await query(`
       SELECT 
-        user_id, 
-        username, 
-        email, 
-        full_name, 
-        role, 
-        status,
-        last_login,
-        CONVERT(varchar, created_at, 120) as created_at
+        id_user,
+        username,
+        position,
+        description
       FROM dbo.users
-      WHERE user_id = @user_id
-    `, { user_id: parseInt(id) });
+      WHERE id_user = @id_user
+    `, { id_user: parseInt(id) });
 
     if (result.recordset.length === 0) {
       return res.status(404).json({ error: 'User not found' });
     }
 
-    res.json(result.recordset[0]);
+    const user = result.recordset[0];
+    
+    res.json({
+      id_user: user.id_user,
+      user_id: user.id_user,
+      username: user.username,
+      position: user.position,
+      description: user.description,
+      email: null,
+      full_name: null,
+      status: 'ACTIVE'
+    });
   } catch (err) {
-    console.error('Get user error:', err);
-    res.status(500).json({ error: 'Failed to fetch user' });
+    console.error('❌ Get user error:', err);
+    res.status(500).json({ 
+      error: 'Failed to fetch user',
+      message: err.message 
+    });
   }
 });
 
 /**
  * POST /api/users
- * Create new user (SERVER, IT only)
+ * Create new user (IT only) - Plain text password
  */
-router.post('/', verifyToken, verifyRole(['SERVER', 'IT']), createUserValidation, async (req, res) => {
+router.post('/', verifyToken, verifyRole(['IT']), async (req, res) => {
   try {
-    const { username, password, email, full_name, role } = req.body;
+    const { username, password, position, description } = req.body;
+
+    console.log('📝 Creating new user:', username);
+
+    // Validate required fields
+    if (!username || !password || !position) {
+      return res.status(400).json({ 
+        error: 'Username, password, and position are required' 
+      });
+    }
+
+    // Validate position
+    const validPositions = ['IT', 'MANAGEMENT', 'RECEIVING', 'SHIPPING', 'SERVER'];
+    if (!validPositions.includes(position)) {
+      return res.status(400).json({ 
+        error: 'Invalid position. Must be one of: ' + validPositions.join(', ') 
+      });
+    }
 
     // Check if username already exists
     const existingUser = await query(
-      'SELECT user_id FROM dbo.users WHERE username = @username',
+      'SELECT id_user FROM dbo.users WHERE username = @username',
       { username }
     );
 
@@ -85,56 +124,51 @@ router.post('/', verifyToken, verifyRole(['SERVER', 'IT']), createUserValidation
       return res.status(400).json({ error: 'Username already exists' });
     }
 
-    // Check if email already exists
-    const existingEmail = await query(
-      'SELECT user_id FROM dbo.users WHERE email = @email',
-      { email }
-    );
-
-    if (existingEmail.recordset.length > 0) {
-      return res.status(400).json({ error: 'Email already exists' });
-    }
-
-    // Hash password
-    const hashedPassword = await bcrypt.hash(password, 10);
-
-    // Insert user
+    // Insert user with plain text password (as per current system)
     await query(`
-      INSERT INTO dbo.users (username, password, email, full_name, role, status, created_at)
-      VALUES (@username, @password, @email, @full_name, @role, 'ACTIVE', GETDATE())
+      INSERT INTO dbo.users (username, password, position, description)
+      VALUES (@username, @password, @position, @description)
     `, { 
-      username, 
-      password: hashedPassword, 
-      email, 
-      full_name, 
-      role 
+      username,
+      password, // Plain text password
+      position,
+      description: description || ''
     });
 
+    console.log('✅ User created successfully:', username);
+
     res.status(201).json({ 
+      success: true,
       message: 'User created successfully',
-      user: { username, email, full_name, role }
+      user: { username, position }
     });
 
   } catch (err) {
-    console.error('Create user error:', err);
-    res.status(500).json({ error: 'Failed to create user' });
+    console.error('❌ Create user error:', err);
+    res.status(500).json({ 
+      error: 'Failed to create user',
+      message: err.message 
+    });
   }
 });
 
 /**
  * PUT /api/users/:id
- * Update user (SERVER, IT only)
+ * Update user (IT only)
  */
-router.put('/:id', verifyToken, verifyRole(['SERVER', 'IT']), updateUserValidation, async (req, res) => {
+router.put('/:id', verifyToken, verifyRole(['IT']), async (req, res) => {
   try {
     const { id } = req.params;
-    const { email, full_name, role, status } = req.body;
+    const { position, description } = req.body;
+
+    console.log(`📝 Updating user ID: ${id}`);
+
     const userId = parseInt(id);
 
     // Check if user exists
     const existingUser = await query(
-      'SELECT user_id FROM dbo.users WHERE user_id = @user_id',
-      { user_id: userId }
+      'SELECT id_user FROM dbo.users WHERE id_user = @id_user',
+      { id_user: userId }
     );
 
     if (existingUser.recordset.length === 0) {
@@ -143,34 +177,20 @@ router.put('/:id', verifyToken, verifyRole(['SERVER', 'IT']), updateUserValidati
 
     // Build dynamic update query
     let updateFields = [];
-    let params = { user_id: userId };
+    let params = { id_user: userId };
 
-    if (email) {
-      // Check if email already exists for another user
-      const emailCheck = await query(
-        'SELECT user_id FROM dbo.users WHERE email = @email AND user_id != @user_id',
-        { email, user_id: userId }
-      );
-      if (emailCheck.recordset.length > 0) {
-        return res.status(400).json({ error: 'Email already in use' });
+    if (position) {
+      const validPositions = ['IT', 'MANAGEMENT', 'RECEIVING', 'SHIPPING', 'SERVER'];
+      if (!validPositions.includes(position)) {
+        return res.status(400).json({ error: 'Invalid position' });
       }
-      updateFields.push('email = @email');
-      params.email = email;
+      updateFields.push('position = @position');
+      params.position = position;
     }
 
-    if (full_name) {
-      updateFields.push('full_name = @full_name');
-      params.full_name = full_name;
-    }
-
-    if (role) {
-      updateFields.push('role = @role');
-      params.role = role;
-    }
-
-    if (status) {
-      updateFields.push('status = @status');
-      params.status = status;
+    if (description !== undefined) {
+      updateFields.push('description = @description');
+      params.description = description;
     }
 
     if (updateFields.length === 0) {
@@ -181,38 +201,46 @@ router.put('/:id', verifyToken, verifyRole(['SERVER', 'IT']), updateUserValidati
     await query(`
       UPDATE dbo.users 
       SET ${updateFields.join(', ')}
-      WHERE user_id = @user_id
+      WHERE id_user = @id_user
     `, params);
 
+    console.log(`✅ User updated successfully: ID ${id}`);
+
     res.json({ 
+      success: true,
       message: 'User updated successfully',
       user_id: userId
     });
 
   } catch (err) {
-    console.error('Update user error:', err);
-    res.status(500).json({ error: 'Failed to update user' });
+    console.error('❌ Update user error:', err);
+    res.status(500).json({ 
+      error: 'Failed to update user',
+      message: err.message 
+    });
   }
 });
 
 /**
  * DELETE /api/users/:id
- * Delete user (SERVER only)
+ * Delete user (IT only)
  */
-router.delete('/:id', verifyToken, verifyRole(['SERVER']), async (req, res) => {
+router.delete('/:id', verifyToken, verifyRole(['IT']), async (req, res) => {
   try {
     const { id } = req.params;
     const userId = parseInt(id);
 
+    console.log(`🗑️ Deleting user ID: ${id}`);
+
     // Prevent deleting yourself
-    if (req.user.user_id === userId) {
+    if (req.user.id_user === userId) {
       return res.status(400).json({ error: 'Cannot delete your own account' });
     }
 
     // Check if user exists
     const existingUser = await query(
-      'SELECT user_id, username FROM dbo.users WHERE user_id = @user_id',
-      { user_id: userId }
+      'SELECT id_user, username FROM dbo.users WHERE id_user = @id_user',
+      { id_user: userId }
     );
 
     if (existingUser.recordset.length === 0) {
@@ -223,24 +251,30 @@ router.delete('/:id', verifyToken, verifyRole(['SERVER']), async (req, res) => {
 
     // Delete user
     await query(
-      'DELETE FROM dbo.users WHERE user_id = @user_id',
-      { user_id: userId }
+      'DELETE FROM dbo.users WHERE id_user = @id_user',
+      { id_user: userId }
     );
 
+    console.log(`✅ User deleted successfully: ${username}`);
+
     res.json({ 
+      success: true,
       message: 'User deleted successfully',
       deleted_user: username
     });
 
   } catch (err) {
-    console.error('Delete user error:', err);
-    res.status(500).json({ error: 'Failed to delete user' });
+    console.error('❌ Delete user error:', err);
+    res.status(500).json({ 
+      error: 'Failed to delete user',
+      message: err.message 
+    });
   }
 });
 
 /**
  * PUT /api/users/:id/password
- * Change user password
+ * Change user password (IT only or own password)
  */
 router.put('/:id/password', verifyToken, async (req, res) => {
   try {
@@ -248,24 +282,26 @@ router.put('/:id/password', verifyToken, async (req, res) => {
     const { current_password, new_password, confirm_password } = req.body;
     const userId = parseInt(id);
 
-    // User can only change their own password, or admin can change any
-    if (req.user.user_id !== userId && req.user.role !== 'SERVER') {
+    console.log(`🔐 Password change request for user ID: ${id}`);
+
+    // User can only change their own password, or IT can change any
+    if (req.user.id_user !== userId && req.user.position !== 'IT') {
       return res.status(403).json({ error: 'Insufficient permissions' });
     }
 
     // Validate new password
-    if (!new_password || new_password.length < 8) {
-      return res.status(400).json({ error: 'Password must be at least 8 characters' });
+    if (!new_password || new_password.length < 3) {
+      return res.status(400).json({ error: 'Password must be at least 3 characters' });
     }
 
     if (new_password !== confirm_password) {
       return res.status(400).json({ error: 'Passwords do not match' });
     }
 
-    // Get current password hash
+    // Get current password
     const userResult = await query(
-      'SELECT password FROM dbo.users WHERE user_id = @user_id',
-      { user_id: userId }
+      'SELECT password FROM dbo.users WHERE id_user = @id_user',
+      { id_user: userId }
     );
 
     if (userResult.recordset.length === 0) {
@@ -273,27 +309,31 @@ router.put('/:id/password', verifyToken, async (req, res) => {
     }
 
     // If user is changing their own password, verify current password
-    if (req.user.user_id === userId) {
-      const isPasswordValid = await bcrypt.compare(current_password, userResult.recordset[0].password);
-      if (!isPasswordValid) {
+    if (req.user.id_user === userId) {
+      if (current_password !== userResult.recordset[0].password) {
         return res.status(401).json({ error: 'Current password is incorrect' });
       }
     }
 
-    // Hash new password
-    const hashedPassword = await bcrypt.hash(new_password, 10);
-
-    // Update password
+    // Update password (plain text as per current system)
     await query(
-      'UPDATE dbo.users SET password = @password WHERE user_id = @user_id',
-      { password: hashedPassword, user_id: userId }
+      'UPDATE dbo.users SET password = @password WHERE id_user = @id_user',
+      { password: new_password, id_user: userId }
     );
 
-    res.json({ message: 'Password updated successfully' });
+    console.log(`✅ Password updated successfully for user ID: ${id}`);
+
+    res.json({ 
+      success: true,
+      message: 'Password updated successfully' 
+    });
 
   } catch (err) {
-    console.error('Change password error:', err);
-    res.status(500).json({ error: 'Failed to change password' });
+    console.error('❌ Change password error:', err);
+    res.status(500).json({ 
+      error: 'Failed to change password',
+      message: err.message 
+    });
   }
 });
 
