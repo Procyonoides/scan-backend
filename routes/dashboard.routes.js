@@ -3,32 +3,11 @@ const router = express.Router();
 const { query } = require('../config/database');
 const { verifyToken } = require('../middleware/auth.middleware');
 
-// ✅ Get all stocks
-router.get('/', verifyToken, async (req, res) => {
-  try {
-    const result = await query(`
-      SELECT 
-        stock_id,
-        warehouse_id,
-        original_barcode,
-        brand,
-        model,
-        color,
-        size,
-        quantity,
-        status
-      FROM dbo.stock
-      ORDER BY stock_id DESC
-    `);
-    res.json(result.recordset);
-  } catch (err) {
-    console.error('Get stocks error:', err);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// ✅ Get warehouse stats - DIPERBAIKI
-router.get('/warehouse-stats', verifyToken, async (req, res) => {
+/**
+ * GET /api/dashboard/stats
+ * Get all dashboard statistics
+ */
+router.get('/stats', verifyToken, async (req, res) => {
   try {
     const result = await query(`
       SELECT 
@@ -38,16 +17,19 @@ router.get('/warehouse-stats', verifyToken, async (req, res) => {
         ISNULL((SELECT SUM(quantity) FROM dbo.stock), 0) as warehouse_stock
     `);
     
-    console.log('✅ Warehouse stats:', result.recordset[0]);
+    console.log('✅ Dashboard stats:', result.recordset[0]);
     res.json(result.recordset[0]);
   } catch (err) {
-    console.error('❌ Get warehouse stats error:', err);
-    res.status(500).json({ error: err.message });
+    console.error('❌ Dashboard stats error:', err);
+    res.status(500).json({ error: 'Failed to fetch dashboard stats' });
   }
 });
 
-// ✅ Get chart data - DIPERBAIKI
-router.get('/chart-data', verifyToken, async (req, res) => {
+/**
+ * GET /api/dashboard/chart
+ * Get chart data for last 7 days
+ */
+router.get('/chart', verifyToken, async (req, res) => {
   try {
     const result = await query(`
       WITH Last7Days AS (
@@ -75,11 +57,11 @@ router.get('/chart-data', verifyToken, async (req, res) => {
       ORDER BY d.date ASC
     `);
     
-    console.log('✅ Chart data:', result.recordset);
+    console.log('✅ Dashboard chart data:', result.recordset);
     res.json(result.recordset);
   } catch (err) {
-    console.error('❌ Get chart data error:', err);
-    res.status(500).json({ error: err.message });
+    console.error('❌ Dashboard chart error:', err);
+    res.status(500).json({ error: 'Failed to fetch chart data' });
   }
 });
 

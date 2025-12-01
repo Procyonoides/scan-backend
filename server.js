@@ -12,6 +12,7 @@ const reportRoutes = require('./routes/report.routes');
 const masterDataRoutes = require('./routes/masterData.routes');
 const transactionRoutes = require('./routes/transaction.routes');
 const userRoutes = require('./routes/user.routes');
+const dashboardRoutes = require('./routes/dashboard.routes');
 
 const app = express();
 
@@ -41,6 +42,7 @@ app.use('/api/reports', reportRoutes);
 app.use('/api/master-data', masterDataRoutes);
 app.use('/api/transactions', transactionRoutes);
 app.use('/api/users', userRoutes);
+app.use('/api/dashboard', dashboardRoutes);
 
 // 404 handler
 app.use((req, res) => {
