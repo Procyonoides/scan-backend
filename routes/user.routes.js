@@ -5,7 +5,7 @@ const { verifyToken, verifyRole } = require('../middleware/auth.middleware');
 
 /**
  * GET /api/users
- * Get all users (IT only) - Updated to work with current database schema
+ * Get all users (IT only) - Updated to include password
  */
 router.get('/', verifyToken, verifyRole(['IT']), async (req, res) => {
   try {
@@ -15,6 +15,7 @@ router.get('/', verifyToken, verifyRole(['IT']), async (req, res) => {
       SELECT 
         id_user,
         username,
+        password,
         position,
         description
       FROM dbo.users
@@ -23,19 +24,7 @@ router.get('/', verifyToken, verifyRole(['IT']), async (req, res) => {
     
     console.log(`✅ Found ${result.recordset.length} users`);
     
-    // Transform data to include status (default ACTIVE)
-    const users = result.recordset.map(user => ({
-      id_user: user.id_user,
-      user_id: user.id_user, // Add alias for compatibility
-      username: user.username,
-      position: user.position,
-      description: user.description,
-      email: null, // Not in current schema
-      full_name: null, // Not in current schema
-      status: 'ACTIVE' // Default status
-    }));
-    
-    res.json(users);
+    res.json(result.recordset);
   } catch (err) {
     console.error('❌ Get users error:', err);
     res.status(500).json({ 
@@ -154,26 +143,29 @@ router.post('/', verifyToken, verifyRole(['IT']), async (req, res) => {
 
 /**
  * PUT /api/users/:id
- * Update user (IT only)
+ * Update user (IT only) - Supports password update
  */
 router.put('/:id', verifyToken, verifyRole(['IT']), async (req, res) => {
   try {
     const { id } = req.params;
-    const { position, description } = req.body;
+    const { position, description, password } = req.body;
 
     console.log(`📝 Updating user ID: ${id}`);
+    console.log(`📋 Request body:`, req.body);
 
     const userId = parseInt(id);
 
     // Check if user exists
     const existingUser = await query(
-      'SELECT id_user FROM dbo.users WHERE id_user = @id_user',
+      'SELECT id_user, username FROM dbo.users WHERE id_user = @id_user',
       { id_user: userId }
     );
 
     if (existingUser.recordset.length === 0) {
       return res.status(404).json({ error: 'User not found' });
     }
+
+    console.log(`👤 Updating user: ${existingUser.recordset[0].username}`);
 
     // Build dynamic update query
     let updateFields = [];
@@ -186,30 +178,48 @@ router.put('/:id', verifyToken, verifyRole(['IT']), async (req, res) => {
       }
       updateFields.push('position = @position');
       params.position = position;
+      console.log(`✏️ Updating position to: ${position}`);
     }
 
     if (description !== undefined) {
       updateFields.push('description = @description');
       params.description = description;
+      console.log(`✏️ Updating description to: ${description}`);
+    }
+
+    // CRITICAL: Check password explicitly
+    if (password !== undefined && password !== null && password !== '') {
+      const passwordStr = String(password).trim();
+      if (passwordStr.length > 0) {
+        if (passwordStr.length < 3) {
+          return res.status(400).json({ error: 'Password must be at least 3 characters' });
+        }
+        updateFields.push('password = @password');
+        params.password = passwordStr;
+        console.log(`🔐 Password will be updated (length: ${passwordStr.length})`);
+      }
     }
 
     if (updateFields.length === 0) {
       return res.status(400).json({ error: 'No fields to update' });
     }
 
+    console.log(`📝 SQL Update fields: ${updateFields.join(', ')}`);
+
     // Execute update
-    await query(`
+    const result = await query(`
       UPDATE dbo.users 
       SET ${updateFields.join(', ')}
       WHERE id_user = @id_user
     `, params);
 
-    console.log(`✅ User updated successfully: ID ${id}`);
+    console.log(`✅ Update executed. Rows affected: ${result.rowsAffected}`);
 
     res.json({ 
       success: true,
       message: 'User updated successfully',
-      user_id: userId
+      user_id: userId,
+      updated_fields: updateFields
     });
 
   } catch (err) {
