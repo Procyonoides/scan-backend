@@ -2,56 +2,57 @@ const express = require('express');
 const router = express.Router();
 const { query } = require('../config/database');
 const { verifyToken, verifyRole } = require('../middleware/auth.middleware');
-const { addBarcodeValidation } = require('../middleware/validation.middleware');
 
 /**
  * GET /api/master-data/barcodes
- * Get all barcodes/stock master data
+ * Get all barcodes with pagination and search
  */
 router.get('/barcodes', verifyToken, async (req, res) => {
   try {
     const { page = 1, limit = 10, search = '' } = req.query;
 
-    // Validate pagination
     const pageNum = Math.max(1, parseInt(page) || 1);
     const limitNum = Math.min(100, Math.max(1, parseInt(limit) || 10));
     const offsetNum = (pageNum - 1) * limitNum;
 
-    // Build search condition
     let searchCondition = '';
-    let params = {};
+    let params = { offset: offsetNum, limit: limitNum };
 
     if (search) {
-      searchCondition = `WHERE original_barcode LIKE @search OR brand LIKE @search OR model LIKE @search`;
+      searchCondition = `WHERE original_barcode LIKE @search 
+                         OR brand LIKE @search 
+                         OR model LIKE @search 
+                         OR color LIKE @search`;
       params.search = `%${search}%`;
     }
 
     // Get total count
     const countResult = await query(
-      `SELECT COUNT(*) as total FROM dbo.stock ${searchCondition}`,
-      params
+      `SELECT COUNT(*) as total FROM dbo.master_database ${searchCondition}`,
+      search ? { search: params.search } : {}
     );
     const total = countResult.recordset[0].total;
 
     // Get data
-    params.offset = offsetNum;
-    params.limit = limitNum;
-
     const result = await query(`
       SELECT 
-        stock_id,
-        warehouse_id,
         original_barcode,
         brand,
-        model,
         color,
         size,
+        four_digit,
+        unit,
         quantity,
-        status,
-        CONVERT(varchar, created_at, 120) as created_at
-      FROM dbo.stock
+        production,
+        model,
+        model_code,
+        item,
+        username,
+        CONVERT(varchar, date_time, 120) as date_time,
+        stock
+      FROM dbo.master_database
       ${searchCondition}
-      ORDER BY stock_id DESC
+      ORDER BY original_barcode DESC
       OFFSET @offset ROWS FETCH NEXT @limit ROWS ONLY
     `, params);
 
@@ -67,133 +68,37 @@ router.get('/barcodes', verifyToken, async (req, res) => {
 
   } catch (err) {
     console.error('Get barcodes error:', err);
-    res.status(500).json({ error: 'Failed to fetch barcodes' });
+    res.status(500).json({ error: 'Failed to fetch barcodes', message: err.message });
   }
 });
 
 /**
- * GET /api/master-data/filter-options
- * Get unique values untuk filter dropdown
- */
-router.get('/filter-options', verifyToken, async (req, res) => {
-  try {
-    // Get unique brands
-    const brandsResult = await query(`
-      SELECT DISTINCT brand FROM dbo.stock WHERE brand IS NOT NULL AND brand != ''
-      ORDER BY brand
-    `);
-
-    // Get unique models
-    const modelsResult = await query(`
-      SELECT DISTINCT model FROM dbo.stock WHERE model IS NOT NULL AND model != ''
-      ORDER BY model
-    `);
-
-    // Get unique colors
-    const colorsResult = await query(`
-      SELECT DISTINCT color FROM dbo.stock WHERE color IS NOT NULL AND color != ''
-      ORDER BY color
-    `);
-
-    // Get unique sizes
-    const sizesResult = await query(`
-      SELECT DISTINCT size FROM dbo.stock WHERE size IS NOT NULL AND size != ''
-      ORDER BY size
-    `);
-
-    // Get unique users
-    const usersResult = await query(`
-      SELECT DISTINCT username FROM dbo.users WHERE username IS NOT NULL
-      ORDER BY username
-    `);
-
-    res.json({
-      brands: brandsResult.recordset.map(r => r.brand),
-      models: modelsResult.recordset.map(r => r.model),
-      colors: colorsResult.recordset.map(r => r.color),
-      sizes: sizesResult.recordset.map(r => r.size),
-      users: usersResult.recordset.map(r => r.username),
-      statuses: ['AVAILABLE', 'LOW_STOCK', 'OUT_OF_STOCK', 'DISCONTINUED']
-    });
-
-  } catch (err) {
-    console.error('Get filter options error:', err);
-    res.status(500).json({ error: 'Failed to fetch filter options' });
-  }
-});
-
-/**
- * POST /api/master-data/barcode
- * Create new barcode/stock item (SERVER, IT only)
- */
-router.post('/barcode', verifyToken, verifyRole(['SERVER', 'IT']), addBarcodeValidation, async (req, res) => {
-  try {
-    const { original_barcode, brand, model, color, size, warehouse_id = 1 } = req.body;
-
-    // Check if barcode already exists
-    const existingBarcode = await query(
-      'SELECT stock_id FROM dbo.stock WHERE original_barcode = @barcode',
-      { barcode: original_barcode }
-    );
-
-    if (existingBarcode.recordset.length > 0) {
-      return res.status(400).json({ error: 'Barcode already exists' });
-    }
-
-    // Insert new barcode
-    await query(`
-      INSERT INTO dbo.stock 
-      (warehouse_id, original_barcode, brand, model, color, size, quantity, status, created_at)
-      VALUES (@warehouse_id, @barcode, @brand, @model, @color, @size, 0, 'AVAILABLE', GETDATE())
-    `, {
-      warehouse_id,
-      barcode: original_barcode,
-      brand,
-      model,
-      color,
-      size
-    });
-
-    res.status(201).json({
-      message: 'Barcode added successfully',
-      data: {
-        original_barcode,
-        brand,
-        model,
-        color,
-        size
-      }
-    });
-
-  } catch (err) {
-    console.error('Add barcode error:', err);
-    res.status(500).json({ error: 'Failed to add barcode' });
-  }
-});
-
-/**
- * GET /api/master-data/barcode/:id
+ * GET /api/master-data/barcode/:barcode
  * Get specific barcode detail
  */
-router.get('/barcode/:id', verifyToken, async (req, res) => {
+router.get('/barcode/:barcode', verifyToken, async (req, res) => {
   try {
-    const { id } = req.params;
+    const { barcode } = req.params;
 
     const result = await query(`
       SELECT 
-        stock_id,
-        warehouse_id,
         original_barcode,
         brand,
-        model,
         color,
         size,
+        four_digit,
+        unit,
         quantity,
-        status,
-        CONVERT(varchar, created_at, 120) as created_at
-      FROM dbo.stock
-      WHERE stock_id = @stock_id
-    `, { stock_id: parseInt(id) });
+        production,
+        model,
+        model_code,
+        item,
+        username,
+        CONVERT(varchar, date_time, 120) as date_time,
+        stock
+      FROM dbo.master_database
+      WHERE original_barcode = @barcode
+    `, { barcode });
 
     if (result.recordset.length === 0) {
       return res.status(404).json({ error: 'Barcode not found' });
@@ -203,28 +108,105 @@ router.get('/barcode/:id', verifyToken, async (req, res) => {
 
   } catch (err) {
     console.error('Get barcode detail error:', err);
-    res.status(500).json({ error: 'Failed to fetch barcode' });
+    res.status(500).json({ error: 'Failed to fetch barcode', message: err.message });
   }
 });
 
 /**
- * PUT /api/master-data/barcode/:id
- * Update barcode (SERVER, IT only)
+ * POST /api/master-data/barcode
+ * Create new barcode (IT only)
  */
-router.put('/barcode/:id', verifyToken, verifyRole(['SERVER', 'IT']), async (req, res) => {
+router.post('/barcode', verifyToken, verifyRole(['IT']), async (req, res) => {
   try {
-    const { id } = req.params;
-    const { brand, model, color, size, status } = req.body;
+    const {
+      original_barcode,
+      brand,
+      color,
+      size,
+      four_digit,
+      unit,
+      quantity,
+      production,
+      model,
+      model_code,
+      item
+    } = req.body;
 
-    // Validate input
-    if (!brand && !model && !color && !size && !status) {
-      return res.status(400).json({ error: 'No fields to update' });
+    // Validate required fields
+    if (!original_barcode || !brand || !color || !size || !unit || !production || !model || !item) {
+      return res.status(400).json({ error: 'Missing required fields' });
     }
+
+    // Check if barcode already exists
+    const existingBarcode = await query(
+      'SELECT original_barcode FROM dbo.master_database WHERE original_barcode = @barcode',
+      { barcode: original_barcode }
+    );
+
+    if (existingBarcode.recordset.length > 0) {
+      return res.status(400).json({ error: 'Barcode already exists' });
+    }
+
+    // Insert new barcode
+    await query(`
+      INSERT INTO dbo.master_database 
+      (original_barcode, brand, color, size, four_digit, unit, quantity, 
+       production, model, model_code, item, username, date_time, stock)
+      VALUES 
+      (@barcode, @brand, @color, @size, @four_digit, @unit, @quantity,
+       @production, @model, @model_code, @item, @username, GETDATE(), 0)
+    `, {
+      barcode: original_barcode,
+      brand,
+      color,
+      size,
+      four_digit: four_digit || '',
+      unit,
+      quantity: parseInt(quantity) || 0,
+      production,
+      model,
+      model_code: model_code || '',
+      item,
+      username: req.user.username
+    });
+
+    res.status(201).json({
+      success: true,
+      message: 'Barcode added successfully',
+      data: { original_barcode }
+    });
+
+  } catch (err) {
+    console.error('Add barcode error:', err);
+    res.status(500).json({ error: 'Failed to add barcode', message: err.message });
+  }
+});
+
+/**
+ * PUT /api/master-data/barcode/:barcode
+ * Update barcode (IT only)
+ */
+router.put('/barcode/:barcode', verifyToken, verifyRole(['IT']), async (req, res) => {
+  try {
+    const { barcode } = req.params;
+    const {
+      brand,
+      color,
+      size,
+      four_digit,
+      unit,
+      quantity,
+      production,
+      model,
+      model_code,
+      item,
+      stock
+    } = req.body;
 
     // Check if barcode exists
     const existing = await query(
-      'SELECT stock_id FROM dbo.stock WHERE stock_id = @stock_id',
-      { stock_id: parseInt(id) }
+      'SELECT original_barcode FROM dbo.master_database WHERE original_barcode = @barcode',
+      { barcode }
     );
 
     if (existing.recordset.length === 0) {
@@ -233,82 +215,170 @@ router.put('/barcode/:id', verifyToken, verifyRole(['SERVER', 'IT']), async (req
 
     // Build update query
     let updateFields = [];
-    let params = { stock_id: parseInt(id) };
+    let params = { barcode };
 
-    if (brand) {
+    if (brand !== undefined) {
       updateFields.push('brand = @brand');
       params.brand = brand;
     }
-
-    if (model) {
-      updateFields.push('model = @model');
-      params.model = model;
-    }
-
-    if (color) {
+    if (color !== undefined) {
       updateFields.push('color = @color');
       params.color = color;
     }
-
-    if (size) {
+    if (size !== undefined) {
       updateFields.push('size = @size');
       params.size = size;
     }
+    if (four_digit !== undefined) {
+      updateFields.push('four_digit = @four_digit');
+      params.four_digit = four_digit;
+    }
+    if (unit !== undefined) {
+      updateFields.push('unit = @unit');
+      params.unit = unit;
+    }
+    if (quantity !== undefined) {
+      updateFields.push('quantity = @quantity');
+      params.quantity = parseInt(quantity);
+    }
+    if (production !== undefined) {
+      updateFields.push('production = @production');
+      params.production = production;
+    }
+    if (model !== undefined) {
+      updateFields.push('model = @model');
+      params.model = model;
+    }
+    if (model_code !== undefined) {
+      updateFields.push('model_code = @model_code');
+      params.model_code = model_code;
+    }
+    if (item !== undefined) {
+      updateFields.push('item = @item');
+      params.item = item;
+    }
+    if (stock !== undefined) {
+      updateFields.push('stock = @stock');
+      params.stock = parseInt(stock);
+    }
 
-    if (status) {
-      updateFields.push('status = @status');
-      params.status = status;
+    if (updateFields.length === 0) {
+      return res.status(400).json({ error: 'No fields to update' });
     }
 
     // Execute update
     await query(`
-      UPDATE dbo.stock 
-      SET ${updateFields.join(', ')}
-      WHERE stock_id = @stock_id
-    `, params);
+      UPDATE dbo.master_database 
+      SET ${updateFields.join(', ')},
+          username = @username,
+          date_time = GETDATE()
+      WHERE original_barcode = @barcode
+    `, { ...params, username: req.user.username });
 
-    res.json({ message: 'Barcode updated successfully' });
+    res.json({
+      success: true,
+      message: 'Barcode updated successfully'
+    });
 
   } catch (err) {
     console.error('Update barcode error:', err);
-    res.status(500).json({ error: 'Failed to update barcode' });
+    res.status(500).json({ error: 'Failed to update barcode', message: err.message });
   }
 });
 
 /**
- * DELETE /api/master-data/barcode/:id
- * Delete barcode (SERVER only)
+ * DELETE /api/master-data/barcode/:barcode
+ * Delete barcode (IT only)
  */
-router.delete('/barcode/:id', verifyToken, verifyRole(['SERVER']), async (req, res) => {
+router.delete('/barcode/:barcode', verifyToken, verifyRole(['IT']), async (req, res) => {
   try {
-    const { id } = req.params;
+    const { barcode } = req.params;
 
     // Check if barcode exists
     const existing = await query(
-      'SELECT original_barcode FROM dbo.stock WHERE stock_id = @stock_id',
-      { stock_id: parseInt(id) }
+      'SELECT original_barcode FROM dbo.master_database WHERE original_barcode = @barcode',
+      { barcode }
     );
 
     if (existing.recordset.length === 0) {
       return res.status(404).json({ error: 'Barcode not found' });
     }
 
-    const barcode = existing.recordset[0].original_barcode;
-
     // Delete barcode
     await query(
-      'DELETE FROM dbo.stock WHERE stock_id = @stock_id',
-      { stock_id: parseInt(id) }
+      'DELETE FROM dbo.master_database WHERE original_barcode = @barcode',
+      { barcode }
     );
 
     res.json({
+      success: true,
       message: 'Barcode deleted successfully',
       deleted_barcode: barcode
     });
 
   } catch (err) {
     console.error('Delete barcode error:', err);
-    res.status(500).json({ error: 'Failed to delete barcode' });
+    res.status(500).json({ error: 'Failed to delete barcode', message: err.message });
+  }
+});
+
+/**
+ * GET /api/master-data/filter-options
+ * Get dropdown options
+ */
+router.get('/filter-options', verifyToken, async (req, res) => {
+  try {
+    // Get models
+    const modelsResult = await query(`
+      SELECT DISTINCT model FROM dbo.list_model ORDER BY model
+    `);
+
+    // Get sizes
+    const sizesResult = await query(`
+      SELECT DISTINCT size FROM dbo.list_size ORDER BY size
+    `);
+
+    // Get productions
+    const productionsResult = await query(`
+      SELECT DISTINCT production FROM dbo.list_production ORDER BY production
+    `);
+
+    res.json({
+      models: modelsResult.recordset.map(r => r.model),
+      sizes: sizesResult.recordset.map(r => r.size),
+      productions: productionsResult.recordset.map(r => r.production),
+      brands: ['ADIDAS', 'NEW BALANCE', 'REEBOK', 'ASICS', 'SPECS', 'OTHER BRAND'],
+      units: ['PRS', 'PCS'],
+      items: ['IP', 'PHYLON', 'BLOKER', 'PAINT', 'RUBBER', 'GOODSOLE']
+    });
+
+  } catch (err) {
+    console.error('Get filter options error:', err);
+    res.status(500).json({ error: 'Failed to fetch filter options', message: err.message });
+  }
+});
+
+/**
+ * GET /api/master-data/model-code/:model
+ * Get model code by model name
+ */
+router.get('/model-code/:model', verifyToken, async (req, res) => {
+  try {
+    const { model } = req.params;
+
+    const result = await query(`
+      SELECT model_code FROM dbo.list_model WHERE model = @model
+    `, { model });
+
+    if (result.recordset.length === 0) {
+      return res.json({ model_code: '' });
+    }
+
+    res.json({ model_code: result.recordset[0].model_code });
+
+  } catch (err) {
+    console.error('Get model code error:', err);
+    res.status(500).json({ error: 'Failed to fetch model code', message: err.message });
   }
 });
 
