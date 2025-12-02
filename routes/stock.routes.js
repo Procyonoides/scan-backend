@@ -5,7 +5,8 @@ const { verifyToken } = require('../middleware/auth.middleware');
 
 /**
  * GET /api/stocks
- * Get all stocks with search and pagination
+ * Get all stocks with search, filter, and pagination
+ * Data dari tabel dbo.stok
  */
 router.get('/', verifyToken, async (req, res) => {
   try {
@@ -15,27 +16,30 @@ router.get('/', verifyToken, async (req, res) => {
     const limitNum = Math.min(100, Math.max(1, parseInt(limit) || 10));
     const offsetNum = (pageNum - 1) * limitNum;
 
+    console.log('📦 Stock request:', { page: pageNum, limit: limitNum, search, status });
+
     // Build WHERE conditions
     let whereConditions = [];
     let params = { offset: offsetNum, limit: limitNum };
 
     if (search) {
       whereConditions.push(`(
-        original_barcode LIKE @search OR 
-        brand LIKE @search OR 
         model LIKE @search OR 
-        color LIKE @search
+        color LIKE @search OR 
+        brand LIKE @search OR
+        production LIKE @search
       )`);
       params.search = `%${search}%`;
     }
 
+    // Status filtering berdasarkan stock_akhir
     if (status) {
       if (status === 'AVAILABLE') {
-        whereConditions.push('quantity > 100');
+        whereConditions.push('ISNULL(stock_akhir, 0) > 100');
       } else if (status === 'LOW_STOCK') {
-        whereConditions.push('quantity > 0 AND quantity <= 100');
+        whereConditions.push('ISNULL(stock_akhir, 0) > 0 AND ISNULL(stock_akhir, 0) <= 100');
       } else if (status === 'OUT_OF_STOCK') {
-        whereConditions.push('quantity = 0');
+        whereConditions.push('ISNULL(stock_akhir, 0) = 0');
       }
     }
 
@@ -44,36 +48,58 @@ router.get('/', verifyToken, async (req, res) => {
       : '';
 
     // Get total count
+    const countQuery = `
+      SELECT COUNT(*) as total 
+      FROM [Backup_hskpro].[dbo].[stok]
+      ${whereClause}
+    `;
+    
     const countResult = await query(
-      `SELECT COUNT(*) as total FROM dbo.stok ${whereClause}`,
+      countQuery,
       search ? { search: params.search } : {}
     );
     const total = countResult.recordset[0].total;
 
-    // Get data
-    const result = await query(`
+    // Get data dari tabel stok (menggunakan ROW_NUMBER untuk kompatibilitas)
+    const dataQuery = `
+      WITH StockData AS (
+        SELECT 
+          no,
+          model,
+          [size],
+          color,
+          brand,
+          item,
+          production,
+          ISNULL(stock_awal, 0) as stock_awal,
+          ISNULL(receiving, 0) as receiving,
+          ISNULL(shipping, 0) as shipping,
+          ISNULL(stock_akhir, 0) as stock_akhir,
+          CAST(ISNULL(stock_akhir, 0) * 100.0 / NULLIF(
+            (SELECT MAX(stock_akhir) FROM [Backup_hskpro].[dbo].[stok]), 0
+          ) AS DECIMAL(5,2)) as [percentage],
+          CASE 
+            WHEN ISNULL(stock_akhir, 0) > 100 THEN 'AVAILABLE'
+            WHEN ISNULL(stock_akhir, 0) > 0 AND ISNULL(stock_akhir, 0) <= 100 THEN 'LOW_STOCK'
+            ELSE 'OUT_OF_STOCK'
+          END as [status],
+          CONVERT(varchar, [date], 120) as [date],
+          ROW_NUMBER() OVER (ORDER BY no DESC) as RowNum
+        FROM [Backup_hskpro].[dbo].[stok]
+        ${whereClause}
+      )
       SELECT 
-        stock_id,
-        warehouse_id,
-        original_barcode,
-        brand,
-        model,
-        color,
-        size,
-        quantity,
-        status,
-        CASE 
-          WHEN quantity > 100 THEN 'AVAILABLE'
-          WHEN quantity > 0 AND quantity <= 100 THEN 'LOW_STOCK'
-          ELSE 'OUT_OF_STOCK'
-        END as computed_status
-      FROM dbo.stok
-      ${whereClause}
-      ORDER BY stock_id DESC
-      OFFSET @offset ROWS FETCH NEXT @limit ROWS ONLY
-    `, params);
+        no, model, [size], color, brand, item, production,
+        stock_awal, receiving, shipping, stock_akhir, 
+        [percentage], [status], [date]
+      FROM StockData
+      WHERE RowNum > @offset AND RowNum <= (@offset + @limit)
+      ORDER BY no DESC
+    `;
 
-    console.log(`✅ Found ${result.recordset.length} stocks`);
+    const result = await query(dataQuery, params);
+
+    console.log(`✅ Found ${result.recordset.length} stocks (Total: ${total})`);
 
     res.json({
       data: result.recordset,
@@ -96,18 +122,19 @@ router.get('/', verifyToken, async (req, res) => {
 
 /**
  * GET /api/stocks/warehouse-stats
- * Get warehouse statistics
+ * Get warehouse statistics dari tabel stok
  */
 router.get('/warehouse-stats', verifyToken, async (req, res) => {
   try {
+    console.log('📊 Fetching warehouse stats...');
+    
+    // Query dari tabel stok
     const result = await query(`
       SELECT 
-        ISNULL((SELECT SUM(quantity) FROM dbo.stok), 0) as first_stock,
-        ISNULL((SELECT COUNT(*) FROM dbo.receiving 
-                WHERE CAST(scan_date AS DATE) = CAST(GETDATE() AS DATE)), 0) as receiving,
-        ISNULL((SELECT COUNT(*) FROM dbo.shipping 
-                WHERE CAST(scan_date AS DATE) = CAST(GETDATE() AS DATE)), 0) as shipping,
-        ISNULL((SELECT SUM(quantity) FROM dbo.stok), 0) as warehouse_stock
+        ISNULL((SELECT SUM(stock_awal) FROM [Backup_hskpro].[dbo].[stok]), 0) as first_stock,
+        ISNULL((SELECT SUM(receiving) FROM [Backup_hskpro].[dbo].[stok]), 0) as receiving,
+        ISNULL((SELECT SUM(shipping) FROM [Backup_hskpro].[dbo].[stok]), 0) as shipping,
+        ISNULL((SELECT SUM(stock_akhir) FROM [Backup_hskpro].[dbo].[stok]), 0) as warehouse_stock
     `);
     
     console.log('✅ Warehouse stats:', result.recordset[0]);
@@ -127,6 +154,8 @@ router.get('/warehouse-stats', verifyToken, async (req, res) => {
  */
 router.get('/chart-data', verifyToken, async (req, res) => {
   try {
+    console.log('📈 Fetching chart data...');
+    
     const result = await query(`
       WITH Last7Days AS (
         SELECT CAST(DATEADD(day, -number, GETDATE()) AS DATE) as date
@@ -165,32 +194,46 @@ router.get('/chart-data', verifyToken, async (req, res) => {
 });
 
 /**
- * GET /api/stocks/:id
- * Get specific stock by ID
+ * GET /api/stocks/:no
+ * Get specific stock by no (primary key)
  */
-router.get('/:id', verifyToken, async (req, res) => {
+router.get('/:no', verifyToken, async (req, res) => {
   try {
-    const { id } = req.params;
+    const { no } = req.params;
+
+    console.log(`🔍 Fetching stock for no: ${no}`);
 
     const result = await query(`
       SELECT 
-        stock_id,
-        warehouse_id,
-        original_barcode,
-        brand,
+        no,
         model,
+        [size],
         color,
-        size,
-        quantity,
-        status
-      FROM dbo.stok
-      WHERE stock_id = @stock_id
-    `, { stock_id: parseInt(id) });
+        brand,
+        item,
+        production,
+        ISNULL(stock_awal, 0) as stock_awal,
+        ISNULL(receiving, 0) as receiving,
+        ISNULL(shipping, 0) as shipping,
+        ISNULL(stock_akhir, 0) as stock_akhir,
+        CAST(ISNULL(stock_akhir, 0) * 100.0 / NULLIF(
+          (SELECT MAX(stock_akhir) FROM [Backup_hskpro].[dbo].[stok]), 0
+        ) AS DECIMAL(5,2)) as [percentage],
+        CASE 
+          WHEN ISNULL(stock_akhir, 0) > 100 THEN 'AVAILABLE'
+          WHEN ISNULL(stock_akhir, 0) > 0 AND ISNULL(stock_akhir, 0) <= 100 THEN 'LOW_STOCK'
+          ELSE 'OUT_OF_STOCK'
+        END as [status],
+        CONVERT(varchar, [date], 120) as [date]
+      FROM [Backup_hskpro].[dbo].[stok]
+      WHERE no = @no
+    `, { no: parseInt(no) });
 
     if (result.recordset.length === 0) {
       return res.status(404).json({ error: 'Stock not found' });
     }
 
+    console.log('✅ Stock found:', result.recordset[0]);
     res.json(result.recordset[0]);
 
   } catch (err) {
