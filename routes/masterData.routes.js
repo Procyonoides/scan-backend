@@ -28,7 +28,7 @@ router.get('/barcodes', verifyToken, async (req, res) => {
 
     // Get total count
     const countResult = await query(
-      `SELECT COUNT(*) as total FROM dbo.master_database ${searchCondition}`,
+      `SELECT COUNT(*) as total FROM [Backup_hskpro].[dbo].[master_database] ${searchCondition}`,
       search ? { search: params.search } : {}
     );
     const total = countResult.recordset[0].total;
@@ -50,13 +50,14 @@ router.get('/barcodes', verifyToken, async (req, res) => {
         username,
         CONVERT(varchar, date_time, 120) as date_time,
         stock
-      FROM dbo.master_database
+      FROM [Backup_hskpro].[dbo].[master_database]
       ${searchCondition}
-      ORDER BY original_barcode DESC
+      ORDER BY date_time DESC
       OFFSET @offset ROWS FETCH NEXT @limit ROWS ONLY
     `, params);
 
     res.json({
+      success: true,
       data: result.recordset,
       pagination: {
         page: pageNum,
@@ -68,7 +69,11 @@ router.get('/barcodes', verifyToken, async (req, res) => {
 
   } catch (err) {
     console.error('Get barcodes error:', err);
-    res.status(500).json({ error: 'Failed to fetch barcodes', message: err.message });
+    res.status(500).json({ 
+      success: false,
+      error: 'Failed to fetch barcodes', 
+      message: err.message 
+    });
   }
 });
 
@@ -96,19 +101,29 @@ router.get('/barcode/:barcode', verifyToken, async (req, res) => {
         username,
         CONVERT(varchar, date_time, 120) as date_time,
         stock
-      FROM dbo.master_database
+      FROM [Backup_hskpro].[dbo].[master_database]
       WHERE original_barcode = @barcode
     `, { barcode });
 
     if (result.recordset.length === 0) {
-      return res.status(404).json({ error: 'Barcode not found' });
+      return res.status(404).json({ 
+        success: false,
+        error: 'Barcode not found' 
+      });
     }
 
-    res.json(result.recordset[0]);
+    res.json({
+      success: true,
+      data: result.recordset[0]
+    });
 
   } catch (err) {
     console.error('Get barcode detail error:', err);
-    res.status(500).json({ error: 'Failed to fetch barcode', message: err.message });
+    res.status(500).json({ 
+      success: false,
+      error: 'Failed to fetch barcode', 
+      message: err.message 
+    });
   }
 });
 
@@ -134,22 +149,28 @@ router.post('/barcode', verifyToken, verifyRole(['IT']), async (req, res) => {
 
     // Validate required fields
     if (!original_barcode || !brand || !color || !size || !unit || !production || !model || !item) {
-      return res.status(400).json({ error: 'Missing required fields' });
+      return res.status(400).json({ 
+        success: false,
+        error: 'Missing required fields' 
+      });
     }
 
     // Check if barcode already exists
     const existingBarcode = await query(
-      'SELECT original_barcode FROM dbo.master_database WHERE original_barcode = @barcode',
+      'SELECT original_barcode FROM [Backup_hskpro].[dbo].[master_database] WHERE original_barcode = @barcode',
       { barcode: original_barcode }
     );
 
     if (existingBarcode.recordset.length > 0) {
-      return res.status(400).json({ error: 'Barcode already exists' });
+      return res.status(400).json({ 
+        success: false,
+        error: 'Barcode already exists' 
+      });
     }
 
     // Insert new barcode
     await query(`
-      INSERT INTO dbo.master_database 
+      INSERT INTO [Backup_hskpro].[dbo].[master_database]
       (original_barcode, brand, color, size, four_digit, unit, quantity, 
        production, model, model_code, item, username, date_time, stock)
       VALUES 
@@ -178,7 +199,11 @@ router.post('/barcode', verifyToken, verifyRole(['IT']), async (req, res) => {
 
   } catch (err) {
     console.error('Add barcode error:', err);
-    res.status(500).json({ error: 'Failed to add barcode', message: err.message });
+    res.status(500).json({ 
+      success: false,
+      error: 'Failed to add barcode', 
+      message: err.message 
+    });
   }
 });
 
@@ -205,12 +230,15 @@ router.put('/barcode/:barcode', verifyToken, verifyRole(['IT']), async (req, res
 
     // Check if barcode exists
     const existing = await query(
-      'SELECT original_barcode FROM dbo.master_database WHERE original_barcode = @barcode',
+      'SELECT original_barcode FROM [Backup_hskpro].[dbo].[master_database] WHERE original_barcode = @barcode',
       { barcode }
     );
 
     if (existing.recordset.length === 0) {
-      return res.status(404).json({ error: 'Barcode not found' });
+      return res.status(404).json({ 
+        success: false,
+        error: 'Barcode not found' 
+      });
     }
 
     // Build update query
@@ -263,12 +291,15 @@ router.put('/barcode/:barcode', verifyToken, verifyRole(['IT']), async (req, res
     }
 
     if (updateFields.length === 0) {
-      return res.status(400).json({ error: 'No fields to update' });
+      return res.status(400).json({ 
+        success: false,
+        error: 'No fields to update' 
+      });
     }
 
     // Execute update
     await query(`
-      UPDATE dbo.master_database 
+      UPDATE [Backup_hskpro].[dbo].[master_database]
       SET ${updateFields.join(', ')},
           username = @username,
           date_time = GETDATE()
@@ -282,7 +313,11 @@ router.put('/barcode/:barcode', verifyToken, verifyRole(['IT']), async (req, res
 
   } catch (err) {
     console.error('Update barcode error:', err);
-    res.status(500).json({ error: 'Failed to update barcode', message: err.message });
+    res.status(500).json({ 
+      success: false,
+      error: 'Failed to update barcode', 
+      message: err.message 
+    });
   }
 });
 
@@ -296,17 +331,20 @@ router.delete('/barcode/:barcode', verifyToken, verifyRole(['IT']), async (req, 
 
     // Check if barcode exists
     const existing = await query(
-      'SELECT original_barcode FROM dbo.master_database WHERE original_barcode = @barcode',
+      'SELECT original_barcode FROM [Backup_hskpro].[dbo].[master_database] WHERE original_barcode = @barcode',
       { barcode }
     );
 
     if (existing.recordset.length === 0) {
-      return res.status(404).json({ error: 'Barcode not found' });
+      return res.status(404).json({ 
+        success: false,
+        error: 'Barcode not found' 
+      });
     }
 
     // Delete barcode
     await query(
-      'DELETE FROM dbo.master_database WHERE original_barcode = @barcode',
+      'DELETE FROM [Backup_hskpro].[dbo].[master_database] WHERE original_barcode = @barcode',
       { barcode }
     );
 
@@ -318,7 +356,11 @@ router.delete('/barcode/:barcode', verifyToken, verifyRole(['IT']), async (req, 
 
   } catch (err) {
     console.error('Delete barcode error:', err);
-    res.status(500).json({ error: 'Failed to delete barcode', message: err.message });
+    res.status(500).json({ 
+      success: false,
+      error: 'Failed to delete barcode', 
+      message: err.message 
+    });
   }
 });
 
@@ -330,20 +372,21 @@ router.get('/filter-options', verifyToken, async (req, res) => {
   try {
     // Get models
     const modelsResult = await query(`
-      SELECT DISTINCT model FROM dbo.list_model ORDER BY model
+      SELECT DISTINCT model FROM [Backup_hskpro].[dbo].[list_model] ORDER BY model
     `);
 
     // Get sizes
     const sizesResult = await query(`
-      SELECT DISTINCT size FROM dbo.list_size ORDER BY size
+      SELECT DISTINCT size FROM [Backup_hskpro].[dbo].[list_size] ORDER BY size
     `);
 
     // Get productions
     const productionsResult = await query(`
-      SELECT DISTINCT production FROM dbo.list_production ORDER BY production
+      SELECT DISTINCT production FROM [Backup_hskpro].[dbo].[list_production] ORDER BY production
     `);
 
     res.json({
+      success: true,
       models: modelsResult.recordset.map(r => r.model),
       sizes: sizesResult.recordset.map(r => r.size),
       productions: productionsResult.recordset.map(r => r.production),
@@ -354,7 +397,11 @@ router.get('/filter-options', verifyToken, async (req, res) => {
 
   } catch (err) {
     console.error('Get filter options error:', err);
-    res.status(500).json({ error: 'Failed to fetch filter options', message: err.message });
+    res.status(500).json({ 
+      success: false,
+      error: 'Failed to fetch filter options', 
+      message: err.message 
+    });
   }
 });
 
@@ -367,18 +414,28 @@ router.get('/model-code/:model', verifyToken, async (req, res) => {
     const { model } = req.params;
 
     const result = await query(`
-      SELECT model_code FROM dbo.list_model WHERE model = @model
+      SELECT model_code FROM [Backup_hskpro].[dbo].[list_model] WHERE model = @model
     `, { model });
 
     if (result.recordset.length === 0) {
-      return res.json({ model_code: '' });
+      return res.json({ 
+        success: true,
+        model_code: '' 
+      });
     }
 
-    res.json({ model_code: result.recordset[0].model_code });
+    res.json({ 
+      success: true,
+      model_code: result.recordset[0].model_code 
+    });
 
   } catch (err) {
     console.error('Get model code error:', err);
-    res.status(500).json({ error: 'Failed to fetch model code', message: err.message });
+    res.status(500).json({ 
+      success: false,
+      error: 'Failed to fetch model code', 
+      message: err.message 
+    });
   }
 });
 
