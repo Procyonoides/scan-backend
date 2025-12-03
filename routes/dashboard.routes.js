@@ -4,17 +4,8 @@ const { query } = require('../config/database');
 const { verifyToken } = require('../middleware/auth.middleware');
 
 /**
- * Middleware untuk log semua request
- */
-router.use((req, res, next) => {
-  console.log(`📊 Dashboard request: ${req.method} ${req.path}`);
-  console.log(`🔑 Token present: ${!!req.headers.authorization}`);
-  next();
-});
-
-/**
  * GET /api/dashboard/warehouse-stats
- * Get warehouse statistics (First Stock, Receiving, Shipping, Warehouse Stock)
+ * Mengambil statistik warehouse - Data dari table stok untuk hari ini
  */
 router.get('/warehouse-stats', verifyToken, async (req, res) => {
   try {
@@ -22,12 +13,14 @@ router.get('/warehouse-stats', verifyToken, async (req, res) => {
     
     const result = await query(`
       SELECT 
-        ISNULL((SELECT SUM(quantity) FROM dbo.stock), 0) as first_stock,
-        ISNULL((SELECT COUNT(*) FROM dbo.receiving 
-                WHERE CAST(scan_date AS DATE) = CAST(GETDATE() AS DATE)), 0) as receiving,
-        ISNULL((SELECT COUNT(*) FROM dbo.shipping 
-                WHERE CAST(scan_date AS DATE) = CAST(GETDATE() AS DATE)), 0) as shipping,
-        ISNULL((SELECT SUM(quantity) FROM dbo.stock), 0) as warehouse_stock
+        ISNULL((SELECT stock_awal FROM [Backup_hskpro].[dbo].[stok] 
+                WHERE CAST(date AS DATE) = CAST(GETDATE() AS DATE)), 0) as first_stock,
+        ISNULL((SELECT receiving FROM [Backup_hskpro].[dbo].[stok] 
+                WHERE CAST(date AS DATE) = CAST(GETDATE() AS DATE)), 0) as receiving,
+        ISNULL((SELECT shipping FROM [Backup_hskpro].[dbo].[stok] 
+                WHERE CAST(date AS DATE) = CAST(GETDATE() AS DATE)), 0) as shipping,
+        ISNULL((SELECT stock_akhir FROM [Backup_hskpro].[dbo].[stok] 
+                WHERE CAST(date AS DATE) = CAST(GETDATE() AS DATE)), 0) as warehouse_stock
     `);
     
     console.log('✅ Warehouse stats:', result.recordset[0]);
@@ -40,40 +33,27 @@ router.get('/warehouse-stats', verifyToken, async (req, res) => {
 
 /**
  * GET /api/dashboard/daily-chart
- * Get chart data untuk 7 hari terakhir
+ * Chart data untuk 7 hari terakhir (dari table stok)
  */
 router.get('/daily-chart', verifyToken, async (req, res) => {
   try {
-    console.log('📈 Fetching daily chart...');
+    console.log('📈 Fetching daily chart from stok table...');
     
+    // Mengambil 7 hari terakhir dari table stok
     const result = await query(`
-      WITH Last7Days AS (
-        SELECT CAST(DATEADD(day, -number, GETDATE()) AS DATE) as date
-        FROM master.dbo.spt_values
-        WHERE type = 'P' AND number BETWEEN 0 AND 6
-      )
-      SELECT 
-        CONVERT(VARCHAR, d.date, 23) as date,
-        ISNULL(r.receiving, 0) as receiving,
-        ISNULL(s.shipping, 0) as shipping
-      FROM Last7Days d
-      LEFT JOIN (
-        SELECT CAST(scan_date AS DATE) as date, COUNT(*) as receiving
-        FROM dbo.receiving
-        WHERE scan_date >= DATEADD(day, -7, CAST(GETDATE() AS DATE))
-        GROUP BY CAST(scan_date AS DATE)
-      ) r ON d.date = r.date
-      LEFT JOIN (
-        SELECT CAST(scan_date AS DATE) as date, COUNT(*) as shipping
-        FROM dbo.shipping
-        WHERE scan_date >= DATEADD(day, -7, CAST(GETDATE() AS DATE))
-        GROUP BY CAST(scan_date AS DATE)
-      ) s ON d.date = s.date
-      ORDER BY d.date ASC
+      SELECT TOP 7 
+        CONVERT(VARCHAR, date, 23) AS date,
+        receiving,
+        shipping
+      FROM [Backup_hskpro].[dbo].[stok]
+      ORDER BY date DESC
     `);
     
-    console.log('✅ Daily chart data:', result.recordset.length, 'records');
-    res.json(result.recordset);
+    // Reverse untuk urutan ascending (oldest to newest)
+    const reversed = result.recordset.reverse();
+    
+    console.log('✅ Daily chart data:', reversed.length, 'records');
+    res.json(reversed);
   } catch (err) {
     console.error('❌ Daily chart error:', err);
     res.status(500).json({ error: 'Failed to fetch chart data', message: err.message });
@@ -82,35 +62,39 @@ router.get('/daily-chart', verifyToken, async (req, res) => {
 
 /**
  * GET /api/dashboard/shift-scan
- * Get scan data by shift (yesterday)
+ * Scan by shift untuk kemarin (dari data_receiving)
  */
 router.get('/shift-scan', verifyToken, async (req, res) => {
   try {
     console.log('👥 Fetching shift scan...');
     
     const result = await query(`
-      WITH YesterdayScans AS (
-        SELECT username, COUNT(*) as total
-        FROM (
-          SELECT username FROM dbo.receiving 
-          WHERE CAST(scan_date AS DATE) = CAST(DATEADD(day, -1, GETDATE()) AS DATE)
-          UNION ALL
-          SELECT username FROM dbo.shipping 
-          WHERE CAST(scan_date AS DATE) = CAST(DATEADD(day, -1, GETDATE()) AS DATE)
-        ) combined
-        GROUP BY username
-      ),
-      TotalScans AS (
-        SELECT SUM(total) as grand_total FROM YesterdayScans
-      )
       SELECT 
-        y.username,
-        y.total,
-        CAST((y.total * 100.0 / NULLIF(t.grand_total, 0)) AS DECIMAL(5,2)) as percent,
-        CAST((y.total * 100.0 / NULLIF(t.grand_total, 0)) AS INT) as status
-      FROM YesterdayScans y
-      CROSS JOIN TotalScans t
-      ORDER BY y.total DESC
+        username,
+        CAST(SUM(quantity) * 100.0 / NULLIF((
+          SELECT SUM(quantity) 
+          FROM [Backup_hskpro].[dbo].[data_receiving] 
+          WHERE CAST(date_time AS DATE) = CAST(DATEADD(day, -1, GETDATE()) AS DATE)
+          AND description = 'INCOME' 
+          AND production = 'PT HSK REMBANG'
+        ), 0) AS DECIMAL(10, 0)) AS status,
+        REPLACE(
+          CAST(SUM(quantity) * 100.0 / NULLIF((
+            SELECT SUM(quantity) 
+            FROM [Backup_hskpro].[dbo].[data_receiving] 
+            WHERE CAST(date_time AS DATE) = CAST(DATEADD(day, -1, GETDATE()) AS DATE)
+            AND description = 'INCOME' 
+            AND production = 'PT HSK REMBANG'
+          ), 0) AS DECIMAL(10, 2)), 
+          '.', ','
+        ) AS [percent],
+        SUM(quantity) AS total
+      FROM [Backup_hskpro].[dbo].[data_receiving]
+      WHERE CAST(date_time AS DATE) = CAST(DATEADD(day, -1, GETDATE()) AS DATE)
+      AND description = 'INCOME' 
+      AND production = 'PT HSK REMBANG'
+      GROUP BY username
+      ORDER BY username
     `);
     
     console.log('✅ Shift scan data:', result.recordset.length, 'records');
@@ -123,31 +107,23 @@ router.get('/shift-scan', verifyToken, async (req, res) => {
 
 /**
  * GET /api/dashboard/warehouse-items
- * Get warehouse items breakdown
+ * Chart warehouse berdasarkan item (dari master_database)
  */
 router.get('/warehouse-items', verifyToken, async (req, res) => {
   try {
     console.log('📦 Fetching warehouse items...');
     
     const result = await query(`
-      WITH ItemTotals AS (
-        SELECT 
-          UPPER(ISNULL(brand, 'UNKNOWN')) as item,
-          SUM(quantity) as total
-        FROM dbo.stock
-        GROUP BY UPPER(ISNULL(brand, 'UNKNOWN'))
-      ),
-      GrandTotal AS (
-        SELECT SUM(quantity) as grand_total FROM dbo.stock
-      )
       SELECT 
-        i.item,
-        i.total,
-        CAST((i.total * 100.0 / NULLIF(g.grand_total, 0)) AS INT) as status
-      FROM ItemTotals i
-      CROSS JOIN GrandTotal g
-      WHERE i.item IN ('IP', 'PHYLON', 'BLOKER', 'PAINT', 'RUBBER', 'GOODSOLE')
-      ORDER BY i.total DESC
+        item,
+        CAST(SUM(stock) * 100.0 / ISNULL(NULLIF((
+          SELECT SUM(stock) FROM [Backup_hskpro].[dbo].[master_database]
+        ), 0), 1) AS DECIMAL(10, 0)) AS status,
+        SUM(stock) AS total
+      FROM [Backup_hskpro].[dbo].[master_database]
+      WHERE stock > 0
+      GROUP BY item
+      ORDER BY total DESC
     `);
     
     console.log('✅ Warehouse items:', result.recordset.length, 'items');
@@ -160,7 +136,7 @@ router.get('/warehouse-items', verifyToken, async (req, res) => {
 
 /**
  * GET /api/dashboard/receiving-list
- * Get latest receiving scans
+ * List scan receiving hari ini
  */
 router.get('/receiving-list', verifyToken, async (req, res) => {
   try {
@@ -168,16 +144,16 @@ router.get('/receiving-list', verifyToken, async (req, res) => {
     
     const result = await query(`
       SELECT TOP 10
-        CONVERT(varchar, scan_date, 120) as date_time,
+        CONVERT(varchar, date_time, 120) as date_time,
         original_barcode,
         model,
         color,
         size,
         quantity,
         username,
-        receiving_id as scan_no
-      FROM dbo.receiving
-      ORDER BY scan_date DESC
+        scan_no
+      FROM [Backup_hskpro].[dbo].[receiving]
+      ORDER BY date_time DESC
     `);
     
     console.log('✅ Receiving list:', result.recordset.length, 'items');
@@ -190,7 +166,7 @@ router.get('/receiving-list', verifyToken, async (req, res) => {
 
 /**
  * GET /api/dashboard/shipping-list
- * Get latest shipping scans
+ * List scan shipping hari ini
  */
 router.get('/shipping-list', verifyToken, async (req, res) => {
   try {
@@ -198,16 +174,16 @@ router.get('/shipping-list', verifyToken, async (req, res) => {
     
     const result = await query(`
       SELECT TOP 10
-        CONVERT(varchar, scan_date, 120) as date_time,
+        CONVERT(varchar, date_time, 120) as date_time,
         original_barcode,
         model,
         color,
         size,
         quantity,
         username,
-        shipping_id as scan_no
-      FROM dbo.shipping
-      ORDER BY scan_date DESC
+        scan_no
+      FROM [Backup_hskpro].[dbo].[shipping]
+      ORDER BY date_time DESC
     `);
     
     console.log('✅ Shipping list:', result.recordset.length, 'items');
