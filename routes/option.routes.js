@@ -1,0 +1,465 @@
+const express = require('express');
+const router = express.Router();
+const { query } = require('../config/database');
+const { verifyToken, verifyRole } = require('../middleware/auth.middleware');
+
+// ==================== MODEL ROUTES ====================
+
+/**
+ * GET /api/options/models
+ * Get all models
+ */
+router.get('/models', verifyToken, async (req, res) => {
+  try {
+    console.log('📋 Fetching all models...');
+    
+    const result = await query(`
+      SELECT model_code, model
+      FROM [Backup_hskpro].[dbo].[list_model]
+      ORDER BY model_code
+    `);
+    
+    console.log(`✅ Found ${result.recordset.length} models`);
+    res.json(result.recordset);
+  } catch (err) {
+    console.error('❌ Get models error:', err);
+    res.status(500).json({ 
+      error: 'Failed to fetch models',
+      message: err.message 
+    });
+  }
+});
+
+/**
+ * POST /api/options/models
+ * Create new model (IT only)
+ */
+router.post('/models', verifyToken, verifyRole(['IT']), async (req, res) => {
+  try {
+    const { model_code, model } = req.body;
+
+    if (!model_code || !model) {
+      return res.status(400).json({ error: 'Model code and model name are required' });
+    }
+
+    console.log('📝 Creating model:', model_code);
+
+    // Check if model_code exists
+    const existing = await query(
+      'SELECT model_code FROM [Backup_hskpro].[dbo].[list_model] WHERE model_code = @code',
+      { code: model_code }
+    );
+
+    if (existing.recordset.length > 0) {
+      return res.status(400).json({ error: 'Model code already exists' });
+    }
+
+    // Insert
+    await query(`
+      INSERT INTO [Backup_hskpro].[dbo].[list_model] (model_code, model)
+      VALUES (@code, @model)
+    `, { code: model_code, model });
+
+    console.log('✅ Model created:', model_code);
+    res.status(201).json({ 
+      success: true,
+      message: 'Model created successfully' 
+    });
+  } catch (err) {
+    console.error('❌ Create model error:', err);
+    res.status(500).json({ 
+      error: 'Failed to create model',
+      message: err.message 
+    });
+  }
+});
+
+/**
+ * PUT /api/options/models/:code
+ * Update model (IT only)
+ */
+router.put('/models/:code', verifyToken, verifyRole(['IT']), async (req, res) => {
+  try {
+    const { code } = req.params;
+    const { model } = req.body;
+
+    if (!model) {
+      return res.status(400).json({ error: 'Model name is required' });
+    }
+
+    console.log('📝 Updating model:', code);
+
+    // Check if exists
+    const existing = await query(
+      'SELECT model_code FROM [Backup_hskpro].[dbo].[list_model] WHERE model_code = @code',
+      { code }
+    );
+
+    if (existing.recordset.length === 0) {
+      return res.status(404).json({ error: 'Model not found' });
+    }
+
+    // Update
+    await query(`
+      UPDATE [Backup_hskpro].[dbo].[list_model]
+      SET model = @model
+      WHERE model_code = @code
+    `, { code, model });
+
+    console.log('✅ Model updated:', code);
+    res.json({ 
+      success: true,
+      message: 'Model updated successfully' 
+    });
+  } catch (err) {
+    console.error('❌ Update model error:', err);
+    res.status(500).json({ 
+      error: 'Failed to update model',
+      message: err.message 
+    });
+  }
+});
+
+/**
+ * DELETE /api/options/models/:code
+ * Delete model (IT only)
+ */
+router.delete('/models/:code', verifyToken, verifyRole(['IT']), async (req, res) => {
+  try {
+    const { code } = req.params;
+
+    console.log('🗑️ Deleting model:', code);
+
+    // Check if exists
+    const existing = await query(
+      'SELECT model_code FROM [Backup_hskpro].[dbo].[list_model] WHERE model_code = @code',
+      { code }
+    );
+
+    if (existing.recordset.length === 0) {
+      return res.status(404).json({ error: 'Model not found' });
+    }
+
+    // Delete
+    await query(
+      'DELETE FROM [Backup_hskpro].[dbo].[list_model] WHERE model_code = @code',
+      { code }
+    );
+
+    console.log('✅ Model deleted:', code);
+    res.json({ 
+      success: true,
+      message: 'Model deleted successfully' 
+    });
+  } catch (err) {
+    console.error('❌ Delete model error:', err);
+    res.status(500).json({ 
+      error: 'Failed to delete model',
+      message: err.message 
+    });
+  }
+});
+
+// ==================== SIZE ROUTES ====================
+
+/**
+ * GET /api/options/sizes
+ * Get all sizes
+ */
+router.get('/sizes', verifyToken, async (req, res) => {
+  try {
+    console.log('📋 Fetching all sizes...');
+    
+    const result = await query(`
+      SELECT size_code, size
+      FROM [Backup_hskpro].[dbo].[list_size]
+      ORDER BY size_code
+    `);
+    
+    console.log(`✅ Found ${result.recordset.length} sizes`);
+    res.json(result.recordset);
+  } catch (err) {
+    console.error('❌ Get sizes error:', err);
+    res.status(500).json({ 
+      error: 'Failed to fetch sizes',
+      message: err.message 
+    });
+  }
+});
+
+/**
+ * POST /api/options/sizes
+ * Create new size (IT only)
+ */
+router.post('/sizes', verifyToken, verifyRole(['IT']), async (req, res) => {
+  try {
+    const { size_code, size } = req.body;
+
+    if (!size_code || !size) {
+      return res.status(400).json({ error: 'Size code and size are required' });
+    }
+
+    console.log('📝 Creating size:', size_code);
+
+    const existing = await query(
+      'SELECT size_code FROM [Backup_hskpro].[dbo].[list_size] WHERE size_code = @code',
+      { code: size_code }
+    );
+
+    if (existing.recordset.length > 0) {
+      return res.status(400).json({ error: 'Size code already exists' });
+    }
+
+    await query(`
+      INSERT INTO [Backup_hskpro].[dbo].[list_size] (size_code, size)
+      VALUES (@code, @size)
+    `, { code: size_code, size });
+
+    console.log('✅ Size created:', size_code);
+    res.status(201).json({ 
+      success: true,
+      message: 'Size created successfully' 
+    });
+  } catch (err) {
+    console.error('❌ Create size error:', err);
+    res.status(500).json({ 
+      error: 'Failed to create size',
+      message: err.message 
+    });
+  }
+});
+
+/**
+ * PUT /api/options/sizes/:code
+ * Update size (IT only)
+ */
+router.put('/sizes/:code', verifyToken, verifyRole(['IT']), async (req, res) => {
+  try {
+    const { code } = req.params;
+    const { size } = req.body;
+
+    if (!size) {
+      return res.status(400).json({ error: 'Size is required' });
+    }
+
+    console.log('📝 Updating size:', code);
+
+    const existing = await query(
+      'SELECT size_code FROM [Backup_hskpro].[dbo].[list_size] WHERE size_code = @code',
+      { code }
+    );
+
+    if (existing.recordset.length === 0) {
+      return res.status(404).json({ error: 'Size not found' });
+    }
+
+    await query(`
+      UPDATE [Backup_hskpro].[dbo].[list_size]
+      SET size = @size
+      WHERE size_code = @code
+    `, { code, size });
+
+    console.log('✅ Size updated:', code);
+    res.json({ 
+      success: true,
+      message: 'Size updated successfully' 
+    });
+  } catch (err) {
+    console.error('❌ Update size error:', err);
+    res.status(500).json({ 
+      error: 'Failed to update size',
+      message: err.message 
+    });
+  }
+});
+
+/**
+ * DELETE /api/options/sizes/:code
+ * Delete size (IT only)
+ */
+router.delete('/sizes/:code', verifyToken, verifyRole(['IT']), async (req, res) => {
+  try {
+    const { code } = req.params;
+
+    console.log('🗑️ Deleting size:', code);
+
+    const existing = await query(
+      'SELECT size_code FROM [Backup_hskpro].[dbo].[list_size] WHERE size_code = @code',
+      { code }
+    );
+
+    if (existing.recordset.length === 0) {
+      return res.status(404).json({ error: 'Size not found' });
+    }
+
+    await query(
+      'DELETE FROM [Backup_hskpro].[dbo].[list_size] WHERE size_code = @code',
+      { code }
+    );
+
+    console.log('✅ Size deleted:', code);
+    res.json({ 
+      success: true,
+      message: 'Size deleted successfully' 
+    });
+  } catch (err) {
+    console.error('❌ Delete size error:', err);
+    res.status(500).json({ 
+      error: 'Failed to delete size',
+      message: err.message 
+    });
+  }
+});
+
+// ==================== PRODUCTION ROUTES ====================
+
+/**
+ * GET /api/options/productions
+ * Get all productions
+ */
+router.get('/productions', verifyToken, async (req, res) => {
+  try {
+    console.log('📋 Fetching all productions...');
+    
+    const result = await query(`
+      SELECT production_code, production
+      FROM [Backup_hskpro].[dbo].[list_production]
+      ORDER BY production_code
+    `);
+    
+    console.log(`✅ Found ${result.recordset.length} productions`);
+    res.json(result.recordset);
+  } catch (err) {
+    console.error('❌ Get productions error:', err);
+    res.status(500).json({ 
+      error: 'Failed to fetch productions',
+      message: err.message 
+    });
+  }
+});
+
+/**
+ * POST /api/options/productions
+ * Create new production (IT only)
+ */
+router.post('/productions', verifyToken, verifyRole(['IT']), async (req, res) => {
+  try {
+    const { production_code, production } = req.body;
+
+    if (!production_code || !production) {
+      return res.status(400).json({ error: 'Production code and production are required' });
+    }
+
+    console.log('📝 Creating production:', production_code);
+
+    const existing = await query(
+      'SELECT production_code FROM [Backup_hskpro].[dbo].[list_production] WHERE production_code = @code',
+      { code: production_code }
+    );
+
+    if (existing.recordset.length > 0) {
+      return res.status(400).json({ error: 'Production code already exists' });
+    }
+
+    await query(`
+      INSERT INTO [Backup_hskpro].[dbo].[list_production] (production_code, production)
+      VALUES (@code, @production)
+    `, { code: production_code, production });
+
+    console.log('✅ Production created:', production_code);
+    res.status(201).json({ 
+      success: true,
+      message: 'Production created successfully' 
+    });
+  } catch (err) {
+    console.error('❌ Create production error:', err);
+    res.status(500).json({ 
+      error: 'Failed to create production',
+      message: err.message 
+    });
+  }
+});
+
+/**
+ * PUT /api/options/productions/:code
+ * Update production (IT only)
+ */
+router.put('/productions/:code', verifyToken, verifyRole(['IT']), async (req, res) => {
+  try {
+    const { code } = req.params;
+    const { production } = req.body;
+
+    if (!production) {
+      return res.status(400).json({ error: 'Production is required' });
+    }
+
+    console.log('📝 Updating production:', code);
+
+    const existing = await query(
+      'SELECT production_code FROM [Backup_hskpro].[dbo].[list_production] WHERE production_code = @code',
+      { code }
+    );
+
+    if (existing.recordset.length === 0) {
+      return res.status(404).json({ error: 'Production not found' });
+    }
+
+    await query(`
+      UPDATE [Backup_hskpro].[dbo].[list_production]
+      SET production = @production
+      WHERE production_code = @code
+    `, { code, production });
+
+    console.log('✅ Production updated:', code);
+    res.json({ 
+      success: true,
+      message: 'Production updated successfully' 
+    });
+  } catch (err) {
+    console.error('❌ Update production error:', err);
+    res.status(500).json({ 
+      error: 'Failed to update production',
+      message: err.message 
+    });
+  }
+});
+
+/**
+ * DELETE /api/options/productions/:code
+ * Delete production (IT only)
+ */
+router.delete('/productions/:code', verifyToken, verifyRole(['IT']), async (req, res) => {
+  try {
+    const { code } = req.params;
+
+    console.log('🗑️ Deleting production:', code);
+
+    const existing = await query(
+      'SELECT production_code FROM [Backup_hskpro].[dbo].[list_production] WHERE production_code = @code',
+      { code }
+    );
+
+    if (existing.recordset.length === 0) {
+      return res.status(404).json({ error: 'Production not found' });
+    }
+
+    await query(
+      'DELETE FROM [Backup_hskpro].[dbo].[list_production] WHERE production_code = @code',
+      { code }
+    );
+
+    console.log('✅ Production deleted:', code);
+    res.json({ 
+      success: true,
+      message: 'Production deleted successfully' 
+    });
+  } catch (err) {
+    console.error('❌ Delete production error:', err);
+    res.status(500).json({ 
+      error: 'Failed to delete production',
+      message: err.message 
+    });
+  }
+});
+
+module.exports = router;
