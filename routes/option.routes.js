@@ -7,23 +7,58 @@ const { verifyToken, verifyRole } = require('../middleware/auth.middleware');
 
 /**
  * GET /api/options/models
- * Get all models
+ * Get all models with pagination
  */
 router.get('/models', verifyToken, async (req, res) => {
   try {
-    console.log('📋 Fetching all models...');
-    
+    const { page = 1, limit = 10, search = '' } = req.query;
+
+    const pageNum = Math.max(1, parseInt(page) || 1);
+    const limitNum = Math.min(100, Math.max(1, parseInt(limit) || 10));
+    const offsetNum = (pageNum - 1) * limitNum;
+
+    console.log('📋 Fetching models with pagination:', { page: pageNum, limit: limitNum, search });
+
+    let searchCondition = '';
+    let params = { offset: offsetNum, limit: limitNum };
+
+    if (search && search.trim() !== '') {
+      searchCondition = `WHERE model_code LIKE @search OR model LIKE @search`;
+      params.search = `%${search.trim()}%`;
+    }
+
+    // Get total count
+    const countResult = await query(
+      `SELECT COUNT(*) as total FROM [Backup_hskpro].[dbo].[list_model] ${searchCondition}`,
+      search && search.trim() !== '' ? { search: params.search } : {}
+    );
+    const total = countResult.recordset[0].total;
+
+    // Get data with pagination
     const result = await query(`
       SELECT model_code, model
       FROM [Backup_hskpro].[dbo].[list_model]
+      ${searchCondition}
       ORDER BY model_code
-    `);
+      OFFSET @offset ROWS FETCH NEXT @limit ROWS ONLY
+    `, params);
     
-    console.log(`✅ Found ${result.recordset.length} models`);
-    res.json(result.recordset);
+    console.log(`✅ Found ${result.recordset.length} models (Total: ${total})`);
+    
+    res.json({
+      success: true,
+      data: result.recordset,
+      pagination: {
+        page: pageNum,
+        limit: limitNum,
+        total,
+        totalPages: Math.ceil(total / limitNum)
+      }
+    });
   } catch (err) {
     console.error('❌ Get models error:', err);
     res.status(500).json({ 
+      success: false,
       error: 'Failed to fetch models',
       message: err.message 
     });
@@ -39,7 +74,10 @@ router.post('/models', verifyToken, verifyRole(['IT']), async (req, res) => {
     const { model_code, model } = req.body;
 
     if (!model_code || !model) {
-      return res.status(400).json({ error: 'Model code and model name are required' });
+      return res.status(400).json({ 
+        success: false,
+        error: 'Model code and model name are required' 
+      });
     }
 
     console.log('📝 Creating model:', model_code);
@@ -51,7 +89,10 @@ router.post('/models', verifyToken, verifyRole(['IT']), async (req, res) => {
     );
 
     if (existing.recordset.length > 0) {
-      return res.status(400).json({ error: 'Model code already exists' });
+      return res.status(400).json({ 
+        success: false,
+        error: 'Model code already exists' 
+      });
     }
 
     // Insert
@@ -68,6 +109,7 @@ router.post('/models', verifyToken, verifyRole(['IT']), async (req, res) => {
   } catch (err) {
     console.error('❌ Create model error:', err);
     res.status(500).json({ 
+      success: false,
       error: 'Failed to create model',
       message: err.message 
     });
@@ -84,7 +126,10 @@ router.put('/models/:code', verifyToken, verifyRole(['IT']), async (req, res) =>
     const { model } = req.body;
 
     if (!model) {
-      return res.status(400).json({ error: 'Model name is required' });
+      return res.status(400).json({ 
+        success: false,
+        error: 'Model name is required' 
+      });
     }
 
     console.log('📝 Updating model:', code);
@@ -96,7 +141,10 @@ router.put('/models/:code', verifyToken, verifyRole(['IT']), async (req, res) =>
     );
 
     if (existing.recordset.length === 0) {
-      return res.status(404).json({ error: 'Model not found' });
+      return res.status(404).json({ 
+        success: false,
+        error: 'Model not found' 
+      });
     }
 
     // Update
@@ -114,6 +162,7 @@ router.put('/models/:code', verifyToken, verifyRole(['IT']), async (req, res) =>
   } catch (err) {
     console.error('❌ Update model error:', err);
     res.status(500).json({ 
+      success: false,
       error: 'Failed to update model',
       message: err.message 
     });
@@ -137,7 +186,10 @@ router.delete('/models/:code', verifyToken, verifyRole(['IT']), async (req, res)
     );
 
     if (existing.recordset.length === 0) {
-      return res.status(404).json({ error: 'Model not found' });
+      return res.status(404).json({ 
+        success: false,
+        error: 'Model not found' 
+      });
     }
 
     // Delete
@@ -154,6 +206,7 @@ router.delete('/models/:code', verifyToken, verifyRole(['IT']), async (req, res)
   } catch (err) {
     console.error('❌ Delete model error:', err);
     res.status(500).json({ 
+      success: false,
       error: 'Failed to delete model',
       message: err.message 
     });
@@ -164,23 +217,58 @@ router.delete('/models/:code', verifyToken, verifyRole(['IT']), async (req, res)
 
 /**
  * GET /api/options/sizes
- * Get all sizes
+ * Get all sizes with pagination
  */
 router.get('/sizes', verifyToken, async (req, res) => {
   try {
-    console.log('📋 Fetching all sizes...');
-    
+    const { page = 1, limit = 10, search = '' } = req.query;
+
+    const pageNum = Math.max(1, parseInt(page) || 1);
+    const limitNum = Math.min(100, Math.max(1, parseInt(limit) || 10));
+    const offsetNum = (pageNum - 1) * limitNum;
+
+    console.log('📋 Fetching sizes with pagination:', { page: pageNum, limit: limitNum, search });
+
+    let searchCondition = '';
+    let params = { offset: offsetNum, limit: limitNum };
+
+    if (search && search.trim() !== '') {
+      searchCondition = `WHERE size_code LIKE @search OR size LIKE @search`;
+      params.search = `%${search.trim()}%`;
+    }
+
+    // Get total count
+    const countResult = await query(
+      `SELECT COUNT(*) as total FROM [Backup_hskpro].[dbo].[list_size] ${searchCondition}`,
+      search && search.trim() !== '' ? { search: params.search } : {}
+    );
+    const total = countResult.recordset[0].total;
+
+    // Get data with pagination
     const result = await query(`
       SELECT size_code, size
       FROM [Backup_hskpro].[dbo].[list_size]
+      ${searchCondition}
       ORDER BY size_code
-    `);
+      OFFSET @offset ROWS FETCH NEXT @limit ROWS ONLY
+    `, params);
     
-    console.log(`✅ Found ${result.recordset.length} sizes`);
-    res.json(result.recordset);
+    console.log(`✅ Found ${result.recordset.length} sizes (Total: ${total})`);
+    
+    res.json({
+      success: true,
+      data: result.recordset,
+      pagination: {
+        page: pageNum,
+        limit: limitNum,
+        total,
+        totalPages: Math.ceil(total / limitNum)
+      }
+    });
   } catch (err) {
     console.error('❌ Get sizes error:', err);
     res.status(500).json({ 
+      success: false,
       error: 'Failed to fetch sizes',
       message: err.message 
     });
@@ -196,7 +284,10 @@ router.post('/sizes', verifyToken, verifyRole(['IT']), async (req, res) => {
     const { size_code, size } = req.body;
 
     if (!size_code || !size) {
-      return res.status(400).json({ error: 'Size code and size are required' });
+      return res.status(400).json({ 
+        success: false,
+        error: 'Size code and size are required' 
+      });
     }
 
     console.log('📝 Creating size:', size_code);
@@ -207,7 +298,10 @@ router.post('/sizes', verifyToken, verifyRole(['IT']), async (req, res) => {
     );
 
     if (existing.recordset.length > 0) {
-      return res.status(400).json({ error: 'Size code already exists' });
+      return res.status(400).json({ 
+        success: false,
+        error: 'Size code already exists' 
+      });
     }
 
     await query(`
@@ -223,6 +317,7 @@ router.post('/sizes', verifyToken, verifyRole(['IT']), async (req, res) => {
   } catch (err) {
     console.error('❌ Create size error:', err);
     res.status(500).json({ 
+      success: false,
       error: 'Failed to create size',
       message: err.message 
     });
@@ -239,7 +334,10 @@ router.put('/sizes/:code', verifyToken, verifyRole(['IT']), async (req, res) => 
     const { size } = req.body;
 
     if (!size) {
-      return res.status(400).json({ error: 'Size is required' });
+      return res.status(400).json({ 
+        success: false,
+        error: 'Size is required' 
+      });
     }
 
     console.log('📝 Updating size:', code);
@@ -250,7 +348,10 @@ router.put('/sizes/:code', verifyToken, verifyRole(['IT']), async (req, res) => 
     );
 
     if (existing.recordset.length === 0) {
-      return res.status(404).json({ error: 'Size not found' });
+      return res.status(404).json({ 
+        success: false,
+        error: 'Size not found' 
+      });
     }
 
     await query(`
@@ -267,6 +368,7 @@ router.put('/sizes/:code', verifyToken, verifyRole(['IT']), async (req, res) => 
   } catch (err) {
     console.error('❌ Update size error:', err);
     res.status(500).json({ 
+      success: false,
       error: 'Failed to update size',
       message: err.message 
     });
@@ -289,7 +391,10 @@ router.delete('/sizes/:code', verifyToken, verifyRole(['IT']), async (req, res) 
     );
 
     if (existing.recordset.length === 0) {
-      return res.status(404).json({ error: 'Size not found' });
+      return res.status(404).json({ 
+        success: false,
+        error: 'Size not found' 
+      });
     }
 
     await query(
@@ -305,6 +410,7 @@ router.delete('/sizes/:code', verifyToken, verifyRole(['IT']), async (req, res) 
   } catch (err) {
     console.error('❌ Delete size error:', err);
     res.status(500).json({ 
+      success: false,
       error: 'Failed to delete size',
       message: err.message 
     });
@@ -315,23 +421,58 @@ router.delete('/sizes/:code', verifyToken, verifyRole(['IT']), async (req, res) 
 
 /**
  * GET /api/options/productions
- * Get all productions
+ * Get all productions with pagination
  */
 router.get('/productions', verifyToken, async (req, res) => {
   try {
-    console.log('📋 Fetching all productions...');
-    
+    const { page = 1, limit = 10, search = '' } = req.query;
+
+    const pageNum = Math.max(1, parseInt(page) || 1);
+    const limitNum = Math.min(100, Math.max(1, parseInt(limit) || 10));
+    const offsetNum = (pageNum - 1) * limitNum;
+
+    console.log('📋 Fetching productions with pagination:', { page: pageNum, limit: limitNum, search });
+
+    let searchCondition = '';
+    let params = { offset: offsetNum, limit: limitNum };
+
+    if (search && search.trim() !== '') {
+      searchCondition = `WHERE production_code LIKE @search OR production LIKE @search`;
+      params.search = `%${search.trim()}%`;
+    }
+
+    // Get total count
+    const countResult = await query(
+      `SELECT COUNT(*) as total FROM [Backup_hskpro].[dbo].[list_production] ${searchCondition}`,
+      search && search.trim() !== '' ? { search: params.search } : {}
+    );
+    const total = countResult.recordset[0].total;
+
+    // Get data with pagination
     const result = await query(`
       SELECT production_code, production
       FROM [Backup_hskpro].[dbo].[list_production]
+      ${searchCondition}
       ORDER BY production_code
-    `);
+      OFFSET @offset ROWS FETCH NEXT @limit ROWS ONLY
+    `, params);
     
-    console.log(`✅ Found ${result.recordset.length} productions`);
-    res.json(result.recordset);
+    console.log(`✅ Found ${result.recordset.length} productions (Total: ${total})`);
+    
+    res.json({
+      success: true,
+      data: result.recordset,
+      pagination: {
+        page: pageNum,
+        limit: limitNum,
+        total,
+        totalPages: Math.ceil(total / limitNum)
+      }
+    });
   } catch (err) {
     console.error('❌ Get productions error:', err);
     res.status(500).json({ 
+      success: false,
       error: 'Failed to fetch productions',
       message: err.message 
     });
@@ -347,7 +488,10 @@ router.post('/productions', verifyToken, verifyRole(['IT']), async (req, res) =>
     const { production_code, production } = req.body;
 
     if (!production_code || !production) {
-      return res.status(400).json({ error: 'Production code and production are required' });
+      return res.status(400).json({ 
+        success: false,
+        error: 'Production code and production are required' 
+      });
     }
 
     console.log('📝 Creating production:', production_code);
@@ -358,7 +502,10 @@ router.post('/productions', verifyToken, verifyRole(['IT']), async (req, res) =>
     );
 
     if (existing.recordset.length > 0) {
-      return res.status(400).json({ error: 'Production code already exists' });
+      return res.status(400).json({ 
+        success: false,
+        error: 'Production code already exists' 
+      });
     }
 
     await query(`
@@ -374,6 +521,7 @@ router.post('/productions', verifyToken, verifyRole(['IT']), async (req, res) =>
   } catch (err) {
     console.error('❌ Create production error:', err);
     res.status(500).json({ 
+      success: false,
       error: 'Failed to create production',
       message: err.message 
     });
@@ -390,7 +538,10 @@ router.put('/productions/:code', verifyToken, verifyRole(['IT']), async (req, re
     const { production } = req.body;
 
     if (!production) {
-      return res.status(400).json({ error: 'Production is required' });
+      return res.status(400).json({ 
+        success: false,
+        error: 'Production is required' 
+      });
     }
 
     console.log('📝 Updating production:', code);
@@ -401,7 +552,10 @@ router.put('/productions/:code', verifyToken, verifyRole(['IT']), async (req, re
     );
 
     if (existing.recordset.length === 0) {
-      return res.status(404).json({ error: 'Production not found' });
+      return res.status(404).json({ 
+        success: false,
+        error: 'Production not found' 
+      });
     }
 
     await query(`
@@ -418,6 +572,7 @@ router.put('/productions/:code', verifyToken, verifyRole(['IT']), async (req, re
   } catch (err) {
     console.error('❌ Update production error:', err);
     res.status(500).json({ 
+      success: false,
       error: 'Failed to update production',
       message: err.message 
     });
@@ -440,7 +595,10 @@ router.delete('/productions/:code', verifyToken, verifyRole(['IT']), async (req,
     );
 
     if (existing.recordset.length === 0) {
-      return res.status(404).json({ error: 'Production not found' });
+      return res.status(404).json({ 
+        success: false,
+        error: 'Production not found' 
+      });
     }
 
     await query(
@@ -456,6 +614,7 @@ router.delete('/productions/:code', verifyToken, verifyRole(['IT']), async (req,
   } catch (err) {
     console.error('❌ Delete production error:', err);
     res.status(500).json({ 
+      success: false,
       error: 'Failed to delete production',
       message: err.message 
     });
