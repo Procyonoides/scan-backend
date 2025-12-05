@@ -366,18 +366,22 @@ router.delete('/barcode/:barcode', verifyToken, verifyRole(['IT']), async (req, 
 
 /**
  * GET /api/master-data/filter-options
- * Get dropdown options
+ * Get dropdown options including size map from database
  */
 router.get('/filter-options', verifyToken, async (req, res) => {
   try {
+    console.log('📡 Loading filter options with size map from database...');
+
     // Get models
     const modelsResult = await query(`
       SELECT DISTINCT model FROM [Backup_hskpro].[dbo].[list_model] ORDER BY model
     `);
 
-    // Get sizes
+    // Get sizes with four_digit mapping
     const sizesResult = await query(`
-      SELECT DISTINCT size FROM [Backup_hskpro].[dbo].[list_size] ORDER BY size
+      SELECT size, size_code as four_digit 
+      FROM [Backup_hskpro].[dbo].[list_size] 
+      ORDER BY size
     `);
 
     // Get productions
@@ -385,11 +389,25 @@ router.get('/filter-options', verifyToken, async (req, res) => {
       SELECT DISTINCT production FROM [Backup_hskpro].[dbo].[list_production] ORDER BY production
     `);
 
+    // Build size map { size: four_digit }
+    const sizeMap = {};
+    sizesResult.recordset.forEach(row => {
+      sizeMap[row.size] = row.four_digit;
+    });
+
+    console.log('✅ Filter options loaded with size map:', {
+      models: modelsResult.recordset.length,
+      sizes: sizesResult.recordset.length,
+      productions: productionsResult.recordset.length,
+      sizeMapEntries: Object.keys(sizeMap).length
+    });
+
     res.json({
       success: true,
       models: modelsResult.recordset.map(r => r.model),
       sizes: sizesResult.recordset.map(r => r.size),
       productions: productionsResult.recordset.map(r => r.production),
+      sizeMap: sizeMap, // ✅ Send size map from database
       brands: ['ADIDAS', 'NEW BALANCE', 'REEBOK', 'ASICS', 'SPECS', 'OTHER BRAND'],
       units: ['PRS', 'PCS'],
       items: ['IP', 'PHYLON', 'BLOKER', 'PAINT', 'RUBBER', 'GOODSOLE']
