@@ -11,18 +11,13 @@ const { scanReceivingValidation } = require('../middleware/validation.middleware
 router.get('/', verifyToken, async (req, res) => {
   try {
     const { page = 1, limit = 10 } = req.query;
-    const offset = (page - 1) * limit;
-
-    // Validate pagination params
     const pageNum = Math.max(1, parseInt(page) || 1);
     const limitNum = Math.min(100, Math.max(1, parseInt(limit) || 10));
     const offsetNum = (pageNum - 1) * limitNum;
 
-    // Get total count
     const countResult = await query('SELECT COUNT(*) as total FROM dbo.receiving');
     const total = countResult.recordset[0].total;
 
-    // Get data
     const result = await query(`
       SELECT 
         receiving_id,
@@ -62,24 +57,17 @@ router.get('/', verifyToken, async (req, res) => {
 /**
  * POST /api/receiving/scan
  * Record receiving scan (RECEIVING, SERVER, IT only)
+ * ✅ WITH SOCKET.IO EMIT
  */
 router.post('/scan', verifyToken, verifyRole(['RECEIVING', 'SERVER', 'IT']), scanReceivingValidation, async (req, res) => {
   try {
     const { original_barcode, model, color, size, quantity, warehouse_id } = req.body;
 
-    // Verify warehouse exists (jika ada table warehouse)
-    // const warehouseCheck = await query(
-    //   'SELECT warehouse_id FROM dbo.warehouse WHERE warehouse_id = @warehouse_id',
-    //   { warehouse_id }
-    // );
-    // if (warehouseCheck.recordset.length === 0) {
-    //   return res.status(400).json({ error: 'Invalid warehouse' });
-    // }
-
     // Insert receiving record
     const result = await query(`
       INSERT INTO dbo.receiving 
       (warehouse_id, original_barcode, model, color, size, quantity, username, status, scan_date)
+      OUTPUT INSERTED.*
       VALUES (@warehouse_id, @barcode, @model, @color, @size, @quantity, @username, 'IN', GETDATE())
     `, {
       warehouse_id,
@@ -91,7 +79,9 @@ router.post('/scan', verifyToken, verifyRole(['RECEIVING', 'SERVER', 'IT']), sca
       username: req.user.username
     });
 
-    // Update stock quantity jika ada table yang match
+    const newReceiving = result.recordset[0];
+
+    // Update stock quantity
     try {
       await query(`
         UPDATE dbo.stock 
@@ -102,12 +92,29 @@ router.post('/scan', verifyToken, verifyRole(['RECEIVING', 'SERVER', 'IT']), sca
         barcode: original_barcode
       });
     } catch (updateErr) {
-      console.warn('Stock update failed (table might not exist):', updateErr);
+      console.warn('Stock update failed:', updateErr);
     }
+
+    // ============ EMIT SOCKET.IO EVENT ============
+    const io = req.app.get('io');
+    io.emit('dashboard:update', {
+      type: 'RECEIVING',
+      receiving_id: newReceiving.receiving_id,
+      barcode: original_barcode,
+      model: model || 'N/A',
+      color: color || 'N/A',
+      size: size || 'N/A',
+      quantity: parseInt(quantity),
+      username: req.user.username,
+      timestamp: new Date().toISOString()
+    });
+
+    console.log('🔔 Dashboard update emitted: RECEIVING');
 
     res.status(201).json({ 
       message: 'Receiving recorded successfully',
       data: {
+        receiving_id: newReceiving.receiving_id,
         barcode: original_barcode,
         quantity,
         timestamp: new Date().toISOString()
@@ -165,7 +172,6 @@ router.put('/:id', verifyToken, verifyRole(['SERVER', 'IT']), async (req, res) =
     const { id } = req.params;
     const { status, quantity } = req.body;
 
-    // Validate input
     if (!status && !quantity) {
       return res.status(400).json({ error: 'No fields to update' });
     }
@@ -174,7 +180,6 @@ router.put('/:id', verifyToken, verifyRole(['SERVER', 'IT']), async (req, res) =
       return res.status(400).json({ error: 'Invalid status' });
     }
 
-    // Check if record exists
     const existing = await query(
       'SELECT receiving_id FROM dbo.receiving WHERE receiving_id = @receiving_id',
       { receiving_id: parseInt(id) }
@@ -184,7 +189,6 @@ router.put('/:id', verifyToken, verifyRole(['SERVER', 'IT']), async (req, res) =
       return res.status(404).json({ error: 'Receiving record not found' });
     }
 
-    // Build update query
     let updateFields = [];
     let params = { receiving_id: parseInt(id) };
 
@@ -198,7 +202,6 @@ router.put('/:id', verifyToken, verifyRole(['SERVER', 'IT']), async (req, res) =
       params.quantity = parseInt(quantity);
     }
 
-    // Execute update
     await query(`
       UPDATE dbo.receiving 
       SET ${updateFields.join(', ')}

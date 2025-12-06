@@ -1,4 +1,6 @@
 const express = require('express');
+const http = require('http');
+const { Server } = require('socket.io');
 const cors = require('cors');
 require('dotenv').config();
 const { connectDB } = require('./config/database');
@@ -16,8 +18,30 @@ const dashboardRoutes = require('./routes/dashboard.routes');
 const optionRoutes = require('./routes/option.routes');
 
 const app = express();
+const server = http.createServer(app);
 
-// Middleware
+// ============ SOCKET.IO SETUP ============
+const io = new Server(server, {
+  cors: {
+    origin: process.env.CORS_ORIGIN || 'http://localhost:4200',
+    methods: ['GET', 'POST'],
+    credentials: true
+  }
+});
+
+// Socket.IO connection handling
+io.on('connection', (socket) => {
+  console.log('✅ Client connected:', socket.id);
+
+  socket.on('disconnect', () => {
+    console.log('❌ Client disconnected:', socket.id);
+  });
+});
+
+// Make io accessible in routes
+app.set('io', io);
+
+// ============ MIDDLEWARE ============
 app.use(cors({
   origin: process.env.CORS_ORIGIN || 'http://localhost:4200',
   credentials: true
@@ -30,7 +54,8 @@ app.get('/api/health', (req, res) => {
   res.json({ 
     status: 'OK', 
     message: 'Server is running',
-    timestamp: new Date().toISOString()
+    timestamp: new Date().toISOString(),
+    socketConnected: io.engine.clientsCount
   });
 });
 
@@ -76,6 +101,7 @@ async function startServer() {
     app.listen(PORT, () => {
       console.log(`\n✅ Server running on http://localhost:${PORT}`);
       console.log(`📝 API URL: http://localhost:${PORT}/api`);
+      console.log(`🔌 Socket.IO ready`);
       console.log(`🏥 Health check: http://localhost:${PORT}/api/health\n`);
     });
   } catch (err) {
@@ -87,11 +113,13 @@ async function startServer() {
 // Graceful shutdown
 process.on('SIGINT', () => {
   console.log('\n🛑 Server shutting down...');
+  io.close();
   process.exit(0);
 });
 
 process.on('SIGTERM', () => {
   console.log('\n🛑 Server shutting down...');
+  io.close();
   process.exit(0);
 });
 
