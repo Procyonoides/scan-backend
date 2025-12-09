@@ -2,207 +2,285 @@ const express = require('express');
 const router = express.Router();
 const { query } = require('../config/database');
 const { verifyToken, verifyRole } = require('../middleware/auth.middleware');
-const { scanShippingValidation } = require('../middleware/validation.middleware');
 
 /**
- * GET /api/shipping
- * Get shipping history dengan pagination
+ * GET /api/shipping/history
+ * ✅ SESUAI PHP: model_scan.php line 126-136 (fetchdatas)
+ * Get last 10 shipping records untuk current user
  */
-router.get('/', verifyToken, async (req, res) => {
+router.get('/history', verifyToken, async (req, res) => {
   try {
-    const { page = 1, limit = 10 } = req.query;
+    const username = req.user.username;
     
-    // Validate pagination params
-    const pageNum = Math.max(1, parseInt(page) || 1);
-    const limitNum = Math.min(100, Math.max(1, parseInt(limit) || 10));
-    const offsetNum = (pageNum - 1) * limitNum;
+    console.log('📋 Fetching shipping history for:', username);
 
-    // Get total count
-    const countResult = await query('SELECT COUNT(*) as total FROM dbo.shipping');
-    const total = countResult.recordset[0].total;
-
-    // Get data
     const result = await query(`
-      SELECT 
-        shipping_id,
-        warehouse_id,
+      SELECT TOP 10
         original_barcode,
-        model,
+        brand,
         color,
         size,
+        four_digit,
+        unit,
         quantity,
+        production,
+        model,
+        model_code,
+        item,
+        CONVERT(varchar, date_time, 120) as date_time,
+        scan_no,
         username,
-        status,
-        CONVERT(varchar, scan_date, 120) as scan_date
-      FROM dbo.shipping
-      ORDER BY scan_date DESC
-      OFFSET @offset ROWS FETCH NEXT @limit ROWS ONLY
-    `, { 
-      offset: offsetNum, 
-      limit: limitNum 
-    });
+        description
+      FROM [Backup_hskpro].[dbo].[shipping]
+      WHERE username = @username
+      ORDER BY date_time DESC
+    `, { username });
+
+    console.log(`✅ Found ${result.recordset.length} shipping records`);
 
     res.json({
-      data: result.recordset,
-      pagination: {
-        page: pageNum,
-        limit: limitNum,
-        total,
-        totalPages: Math.ceil(total / limitNum)
-      }
+      success: true,
+      data: result.recordset
     });
 
   } catch (err) {
-    console.error('Get shipping error:', err);
-    res.status(500).json({ error: 'Failed to fetch shipping data' });
+    console.error('❌ Get shipping history error:', err);
+    res.status(500).json({ 
+      success: false,
+      error: 'Failed to fetch shipping history',
+      message: err.message 
+    });
   }
 });
 
 /**
  * POST /api/shipping/scan
- * Record shipping scan (SHIPPING, SERVER, IT only)
+ * ✅ SESUAI PHP: controller_scan.php line 401-596 (getscanshi)
+ * Scan barcode untuk shipping dengan validasi:
+ * 1. Cek maintenance time (07:30:00 - 07:30:06)
+ * 2. Validasi position user harus SHIPPING atau IT
+ * 3. Cari barcode di master_database
+ * 4. Generate scan_no otomatis (max + 1 untuk hari ini)
+ * 5. Insert ke table shipping dengan semua data dari master_database
  */
-router.post('/scan', verifyToken, verifyRole(['SHIPPING', 'SERVER', 'IT']), scanShippingValidation, async (req, res) => {
+router.post('/scan', verifyToken, async (req, res) => {
   try {
-    const { original_barcode, model, color, size, quantity, warehouse_id } = req.body;
+    const { barcode } = req.body;
+    const username = req.user.username;
+    const position = req.user.position;
 
-    // Insert shipping record
-    const result = await query(`
-      INSERT INTO dbo.shipping 
-      (warehouse_id, original_barcode, model, color, size, quantity, username, status, scan_date)
-      VALUES (@warehouse_id, @barcode, @model, @color, @size, @quantity, @username, 'OUT', GETDATE())
-    `, {
-      warehouse_id,
-      barcode: original_barcode,
-      model: model || 'N/A',
-      color: color || 'N/A',
-      size: size || 'N/A',
-      quantity: parseInt(quantity),
-      username: req.user.username
-    });
+    console.log('📷 Scan shipping:', { barcode, username, position });
 
-    // Update stock quantity (decrease)
-    try {
-      await query(`
-        UPDATE dbo.stock 
-        SET quantity = CASE 
-          WHEN (quantity - @quantity) < 0 THEN 0 
-          ELSE quantity - @quantity 
-        END
-        WHERE original_barcode = @barcode
-      `, {
-        quantity: parseInt(quantity),
-        barcode: original_barcode
+    // Validasi input
+    if (!barcode || barcode.trim() === '') {
+      console.warn('❌ Barcode empty');
+      return res.status(400).json({ 
+        success: false,
+        error: 'BARCODE_REQUIRED',
+        message: 'Barcode harus diisi' 
       });
-    } catch (updateErr) {
-      console.warn('Stock update failed (table might not exist):', updateErr);
     }
 
-    res.status(201).json({ 
-      message: 'Shipping recorded successfully',
-      data: {
-        barcode: original_barcode,
+    // 1. CHECK MAINTENANCE TIME (07:30:00 - 07:30:06)
+    const now = new Date();
+    const hours = now.getHours();
+    const minutes = now.getMinutes();
+    const seconds = now.getSeconds();
+    const currentTime = hours * 3600 + minutes * 60 + seconds;
+    const maintenanceStart = 7 * 3600 + 30 * 60 + 0; // 07:30:00
+    const maintenanceEnd = 7 * 3600 + 30 * 60 + 6;   // 07:30:06
+
+    if (currentTime >= maintenanceStart && currentTime <= maintenanceEnd) {
+      console.warn('⚠️ Maintenance time - Transaction blocked');
+      return res.status(503).json({
+        success: false,
+        error: 'SYSTEM_MAINTENANCE',
+        message: 'Harap tidak melakukan transaksi, sedang proses perpindahan data'
+      });
+    }
+
+    // 2. VALIDASI POSITION (harus SHIPPING atau IT)
+    if (position !== 'SHIPPING' && position !== 'IT') {
+      console.warn(`❌ Invalid position: ${position}`);
+      return res.status(403).json({
+        success: false,
+        error: 'INVALID_POSITION',
+        message: 'Username tidak sesuai - Harus posisi SHIPPING atau IT'
+      });
+    }
+
+    // 3. CARI BARCODE DI MASTER_DATABASE
+    console.log('🔍 Searching barcode in master_database:', barcode);
+    
+    const masterData = await query(`
+      SELECT 
+        original_barcode,
+        brand,
+        color,
+        size,
+        four_digit,
+        unit,
         quantity,
+        production,
+        model,
+        model_code,
+        item
+      FROM [Backup_hskpro].[dbo].[master_database]
+      WHERE original_barcode = @barcode
+    `, { barcode: barcode.trim() });
+
+    console.log('🔍 Master data result:', masterData.recordset.length, 'rows');
+
+    if (masterData.recordset.length === 0) {
+      console.warn(`❌ Barcode not found in master_database: ${barcode}`);
+      return res.status(404).json({
+        success: false,
+        error: 'BARCODE_NOT_FOUND',
+        message: 'Data Gagal Diinputkan - Barcode tidak ditemukan di master database'
+      });
+    }
+
+    const data = masterData.recordset[0];
+    console.log('✅ Barcode found:', data);
+
+    // 4. GET USER DESCRIPTION
+    const userData = await query(
+      'SELECT description FROM [Backup_hskpro].[dbo].[users] WHERE username = @username',
+      { username }
+    );
+    const description = userData.recordset[0]?.description || '';
+    console.log('👤 User description:', description);
+
+    // 5. GENERATE SCAN_NO (MAX + 1 untuk hari ini)
+    const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+    console.log('📅 Today:', today);
+    
+    const scanNoResult = await query(`
+      SELECT ISNULL(MAX(scan_no), 0) as max_scan_no
+      FROM [Backup_hskpro].[dbo].[shipping]
+      WHERE CAST(date_time AS DATE) = @today
+    `, { today });
+    
+    const scan_no = scanNoResult.recordset[0].max_scan_no + 1;
+    console.log('🔢 New scan_no:', scan_no);
+
+    // 6. INSERT KE TABLE SHIPPING
+    console.log('💾 Inserting to shipping table...');
+    
+    await query(`
+      INSERT INTO [Backup_hskpro].[dbo].[shipping]
+      (original_barcode, brand, color, size, four_digit, unit, quantity, 
+       production, model, model_code, item, date_time, scan_no, username, description)
+      VALUES 
+      (@original_barcode, @brand, @color, @size, @four_digit, @unit, @quantity,
+       @production, @model, @model_code, @item, GETDATE(), @scan_no, @username, @description)
+    `, {
+      original_barcode: data.original_barcode,
+      brand: data.brand,
+      color: data.color,
+      size: data.size,
+      four_digit: data.four_digit || '',
+      unit: data.unit,
+      quantity: data.quantity,
+      production: data.production,
+      model: data.model,
+      model_code: data.model_code || '',
+      item: data.item,
+      scan_no,
+      username,
+      description
+    });
+
+    console.log(`✅ Scan shipping berhasil: ${barcode}, scan_no: ${scan_no}`);
+
+    // 7. SOCKET.IO EMIT (optional)
+    const io = req.app.get('io');
+    if (io) {
+      io.emit('dashboard:update', {
+        type: 'SHIPPING',
+        barcode: data.original_barcode,
+        model: data.model,
+        color: data.color,
+        size: data.size,
+        quantity: data.quantity,
+        username,
+        scan_no,
         timestamp: new Date().toISOString()
+      });
+      console.log('📡 Socket.IO event emitted');
+    }
+
+    // 8. RESPONSE
+    res.status(201).json({
+      success: true,
+      message: 'Data Berhasil Diinputkan',
+      data: {
+        scan_no,
+        original_barcode: data.original_barcode,
+        model: data.model,
+        color: data.color,
+        size: data.size,
+        quantity: data.quantity,
+        date_time: new Date().toISOString(),
+        username
       }
     });
 
   } catch (err) {
-    console.error('Record shipping error:', err);
-    res.status(500).json({ error: 'Failed to record shipping' });
+    console.error('❌ Scan shipping error:', err);
+    console.error('❌ Error stack:', err.stack);
+    res.status(500).json({ 
+      success: false,
+      error: 'SCAN_FAILED',
+      message: 'Gagal melakukan scan',
+      details: err.message 
+    });
   }
 });
 
 /**
- * GET /api/shipping/:id
- * Get specific shipping record
+ * DELETE /api/shipping/:date/:scan/:user
+ * Delete shipping record (IT, MANAGEMENT only)
  */
-router.get('/:id', verifyToken, async (req, res) => {
+router.delete('/:date/:scan/:user', verifyToken, verifyRole(['IT', 'MANAGEMENT']), async (req, res) => {
   try {
-    const { id } = req.params;
+    const { date, scan, user } = req.params;
 
-    const result = await query(`
-      SELECT 
-        shipping_id,
-        warehouse_id,
-        original_barcode,
-        model,
-        color,
-        size,
-        quantity,
-        username,
-        status,
-        CONVERT(varchar, scan_date, 120) as scan_date
-      FROM dbo.shipping
-      WHERE shipping_id = @shipping_id
-    `, { shipping_id: parseInt(id) });
-
-    if (result.recordset.length === 0) {
-      return res.status(404).json({ error: 'Shipping record not found' });
-    }
-
-    res.json(result.recordset[0]);
-
-  } catch (err) {
-    console.error('Get shipping detail error:', err);
-    res.status(500).json({ error: 'Failed to fetch shipping record' });
-  }
-});
-
-/**
- * PUT /api/shipping/:id
- * Update shipping record (SERVER, IT only)
- */
-router.put('/:id', verifyToken, verifyRole(['SERVER', 'IT']), async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { status, quantity } = req.body;
-
-    // Validate input
-    if (!status && !quantity) {
-      return res.status(400).json({ error: 'No fields to update' });
-    }
-
-    if (status && !['IN', 'OUT', 'PENDING', 'CANCELLED'].includes(status)) {
-      return res.status(400).json({ error: 'Invalid status' });
-    }
+    console.log('🗑️ Delete shipping:', { date, scan, user });
 
     // Check if record exists
     const existing = await query(
-      'SELECT shipping_id FROM dbo.shipping WHERE shipping_id = @shipping_id',
-      { shipping_id: parseInt(id) }
+      'SELECT scan_no FROM [Backup_hskpro].[dbo].[shipping] WHERE date_time = @date AND scan_no = @scan AND username = @user',
+      { date, scan: parseInt(scan), user }
     );
 
     if (existing.recordset.length === 0) {
-      return res.status(404).json({ error: 'Shipping record not found' });
+      return res.status(404).json({
+        success: false,
+        error: 'Record not found'
+      });
     }
 
-    // Build update query
-    let updateFields = [];
-    let params = { shipping_id: parseInt(id) };
+    // Delete record
+    await query(
+      'DELETE FROM [Backup_hskpro].[dbo].[shipping] WHERE date_time = @date AND scan_no = @scan AND username = @user',
+      { date, scan: parseInt(scan), user }
+    );
 
-    if (status) {
-      updateFields.push('status = @status');
-      params.status = status;
-    }
+    console.log('✅ Shipping record deleted');
 
-    if (quantity) {
-      updateFields.push('quantity = @quantity');
-      params.quantity = parseInt(quantity);
-    }
-
-    // Execute update
-    await query(`
-      UPDATE dbo.shipping 
-      SET ${updateFields.join(', ')}
-      WHERE shipping_id = @shipping_id
-    `, params);
-
-    res.json({ message: 'Shipping record updated successfully' });
+    res.json({
+      success: true,
+      message: 'Record deleted successfully'
+    });
 
   } catch (err) {
-    console.error('Update shipping error:', err);
-    res.status(500).json({ error: 'Failed to update shipping record' });
+    console.error('❌ Delete shipping error:', err);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to delete record',
+      message: err.message
+    });
   }
 });
 
