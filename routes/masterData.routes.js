@@ -2,6 +2,8 @@ const express = require('express');
 const router = express.Router();
 const { query } = require('../config/database');
 const { verifyToken, verifyRole } = require('../middleware/auth.middleware');
+const multer = require('multer');
+const XLSX = require('xlsx');
 
 /**
  * GET /api/master-data/barcodes
@@ -453,6 +455,291 @@ router.get('/model-code/:model', verifyToken, async (req, res) => {
       success: false,
       error: 'Failed to fetch model code', 
       message: err.message 
+    });
+  }
+});
+
+// ==================== FILE UPLOAD ENDPOINTS ====================
+
+// Configure multer for file uploads
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB limit
+  fileFilter: (req, file, cb) => {
+    const allowedMimes = [
+      'application/vnd.ms-excel',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'text/csv'
+    ];
+    
+    if (allowedMimes.includes(file.mimetype)) {
+      cb(null, true);
+    } else {
+      cb(new Error('Invalid file format. Only Excel (.xlsx, .xls) and CSV files are allowed.'));
+    }
+  }
+});
+
+/**
+ * POST /api/master-data/reset-stock
+ * Reset all stock to 0
+ * ✅ SESUAI PHP: controller_monitoring->resets()
+ */
+router.post('/reset-stock', verifyToken, verifyRole(['IT']), async (req, res) => {
+  try {
+    console.log('🔄 Resetting all stock values to 0');
+
+    await query(`
+      UPDATE [Backup_hskpro].[dbo].[master_database] 
+      SET stock = 0
+    `);
+
+    console.log('✅ Stock reset successful');
+
+    res.json({
+      success: true,
+      message: 'All stock values have been reset to 0'
+    });
+
+  } catch (err) {
+    console.error('❌ Reset stock error:', err);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to reset stock',
+      message: err.message
+    });
+  }
+});
+
+/**
+ * POST /api/master-data/import-barcode
+ * Import barcodes from Excel file
+ */
+router.post('/import-barcode', verifyToken, verifyRole(['IT']), upload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({
+        success: false,
+        error: 'No file uploaded'
+      });
+    }
+
+    console.log('📥 Importing barcodes from file:', req.file.originalname);
+
+    // Parse Excel file
+    const workbook = XLSX.read(req.file.buffer, { type: 'buffer' });
+    const sheetName = workbook.SheetNames[0];
+    const worksheet = workbook.Sheets[sheetName];
+    const data = XLSX.utils.sheet_to_json(worksheet);
+
+    if (data.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'Excel file is empty'
+      });
+    }
+
+    console.log(`📊 Found ${data.length} records to import`);
+
+    let successCount = 0;
+    let errorCount = 0;
+    const errors = [];
+
+    // Process each row
+    for (let i = 0; i < data.length; i++) {
+      try {
+        const row = data[i];
+        
+        // Validate required fields
+        if (!row.original_barcode || !row.brand || !row.color || !row.size) {
+          errors.push(`Row ${i + 1}: Missing required fields (barcode, brand, color, size)`);
+          errorCount++;
+          continue;
+        }
+
+        // Check if barcode already exists
+        const checkResult = await query(`
+          SELECT COUNT(*) as count FROM [Backup_hskpro].[dbo].[master_database] 
+          WHERE original_barcode = @barcode
+        `, { barcode: row.original_barcode.toString().trim() });
+
+        if (checkResult.recordset[0].count > 0) {
+          errors.push(`Row ${i + 1}: Barcode ${row.original_barcode} already exists`);
+          errorCount++;
+          continue;
+        }
+
+        // Get model code if model is provided
+        let modelCode = '';
+        if (row.model) {
+          const modelResult = await query(`
+            SELECT model_code FROM [Backup_hskpro].[dbo].[list_model] WHERE model = @model
+          `, { model: row.model.toString().trim() });
+          modelCode = modelResult.recordset[0]?.model_code || '';
+        }
+
+        // Insert barcode
+        await query(`
+          INSERT INTO [Backup_hskpro].[dbo].[master_database]
+          (original_barcode, brand, color, size, four_digit, unit, quantity, 
+           production, model, model_code, item, username, date_time, stock)
+          VALUES 
+          (@barcode, @brand, @color, @size, @four_digit, @unit, @quantity,
+           @production, @model, @model_code, @item, @username, GETDATE(), @stock)
+        `, {
+          barcode: row.original_barcode.toString().trim(),
+          brand: (row.brand || '').toString().trim().toUpperCase(),
+          color: (row.color || '').toString().trim().toUpperCase(),
+          size: (row.size || '').toString().trim(),
+          four_digit: (row.four_digit || '').toString().trim(),
+          unit: (row.unit || 'PCS').toString().trim(),
+          quantity: parseInt(row.quantity || 0),
+          production: (row.production || '').toString().trim(),
+          model: (row.model || '').toString().trim(),
+          model_code: modelCode,
+          item: (row.item || '').toString().trim(),
+          username: req.user.username,
+          stock: parseInt(row.stock || 0)
+        });
+
+        successCount++;
+      } catch (err) {
+        errors.push(`Row ${i + 1}: ${err.message}`);
+        errorCount++;
+      }
+    }
+
+    console.log(`✅ Import complete: ${successCount} success, ${errorCount} errors`);
+
+    res.json({
+      success: true,
+      message: `Import completed: ${successCount} records imported, ${errorCount} errors`,
+      successCount,
+      errorCount,
+      errors: errors.length > 0 ? errors : undefined
+    });
+
+  } catch (err) {
+    console.error('❌ Import barcode error:', err);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to import barcodes',
+      message: err.message
+    });
+  }
+});
+
+/**
+ * POST /api/master-data/import-stock-opname
+ * Import stock opname data from Excel file
+ * ✅ Hanya extract column A (original_barcode) dan N (stock)
+ */
+router.post('/import-stock-opname', verifyToken, verifyRole(['IT']), upload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({
+        success: false,
+        error: 'No file uploaded'
+      });
+    }
+
+    console.log('📥 Importing stock opname from file:', req.file.originalname);
+
+    // Parse Excel file
+    const workbook = XLSX.read(req.file.buffer, { type: 'buffer' });
+    const sheetName = workbook.SheetNames[0];
+    const worksheet = workbook.Sheets[sheetName];
+    const data = XLSX.utils.sheet_to_json(worksheet);
+
+    if (data.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'Excel file is empty'
+      });
+    }
+
+    console.log(`📊 Found ${data.length} records to process`);
+
+    let successCount = 0;
+    let errorCount = 0;
+    const errors = [];
+
+    // Process each row
+    for (let i = 0; i < data.length; i++) {
+      try {
+        const row = data[i];
+        
+        // ✅ Get column A (original_barcode) dan N (stock)
+        // Excel data will be parsed with headers, so we need to check the actual keys
+        const keys = Object.keys(row);
+        
+        // Try to find barcode column (could be 'A', 'original_barcode', or first column)
+        let barcode = row['A'] || row['original_barcode'] || row[keys[0]];
+        
+        // Try to find stock column (could be 'N', 'stock', 'Stock', or 14th column)
+        let stock = row['N'] || row['stock'] || row['Stock'] || row[keys[13]];
+        
+        if (!barcode) {
+          errors.push(`Row ${i + 1}: Missing barcode in column A`);
+          errorCount++;
+          continue;
+        }
+
+        if (stock === undefined || stock === null || stock === '') {
+          errors.push(`Row ${i + 1}: Missing stock in column N`);
+          errorCount++;
+          continue;
+        }
+
+        barcode = barcode.toString().trim();
+        stock = parseInt(stock) || 0;
+
+        // Check if barcode exists
+        const checkResult = await query(`
+          SELECT COUNT(*) as count FROM [Backup_hskpro].[dbo].[master_database] 
+          WHERE original_barcode = @barcode
+        `, { barcode });
+
+        if (checkResult.recordset[0].count === 0) {
+          errors.push(`Row ${i + 1}: Barcode ${barcode} not found in system`);
+          errorCount++;
+          continue;
+        }
+
+        // Update stock untuk barcode tersebut
+        await query(`
+          UPDATE [Backup_hskpro].[dbo].[master_database]
+          SET stock = @stock
+          WHERE original_barcode = @barcode
+        `, {
+          barcode,
+          stock
+        });
+
+        console.log(`✅ Updated stock for ${barcode}: ${stock}`);
+        successCount++;
+      } catch (err) {
+        errors.push(`Row ${i + 1}: ${err.message}`);
+        errorCount++;
+      }
+    }
+
+    console.log(`✅ Stock opname import complete: ${successCount} success, ${errorCount} errors`);
+
+    res.json({
+      success: true,
+      message: `Import completed: ${successCount} barcodes updated, ${errorCount} errors`,
+      successCount,
+      errorCount,
+      errors: errors.length > 0 ? errors : undefined
+    });
+
+  } catch (err) {
+    console.error('❌ Import stock opname error:', err);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to import stock opname',
+      message: err.message
     });
   }
 });

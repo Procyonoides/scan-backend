@@ -5,8 +5,7 @@ const { verifyToken, verifyRole } = require('../middleware/auth.middleware');
 
 /**
  * GET /api/receiving/history
- * ✅ SESUAI PHP: model_scan.php line 115-125 (fetchdatar)
- * Get last 10 receiving records untuk current user
+ * ✅ Get last 10 receiving records untuk current user
  */
 router.get('/history', verifyToken, async (req, res) => {
   try {
@@ -54,14 +53,71 @@ router.get('/history', verifyToken, async (req, res) => {
 });
 
 /**
+ * ✅ NEW: GET /api/receiving/today
+ * Get ALL receiving scans for TODAY (like dashboard)
+ * Supports pagination via query params
+ */
+router.get('/today', verifyToken, async (req, res) => {
+  try {
+    const page = req.query.page || 1;
+    const limit = req.query.limit || 100;
+    const pageNum = Math.max(1, parseInt(page));
+    const limitNum = Math.min(1000, Math.max(1, parseInt(limit)));
+    const offset = (pageNum - 1) * limitNum;
+
+    console.log('📋 Fetching TODAY receiving scans...', { page: pageNum, limit: limitNum });
+
+    // Get total count for today
+    const countResult = await query(`
+      SELECT COUNT(*) as total
+      FROM [Backup_hskpro].[dbo].[receiving]
+      WHERE CAST(date_time AS DATE) = CAST(GETDATE() AS DATE)
+    `);
+    const total = countResult.recordset[0].total;
+
+    // Get paginated data
+    const result = await query(`
+      SELECT
+        CONVERT(varchar, date_time, 120) as date_time,
+        original_barcode,
+        model,
+        color,
+        size,
+        quantity,
+        username,
+        scan_no
+      FROM [Backup_hskpro].[dbo].[receiving]
+      WHERE CAST(date_time AS DATE) = CAST(GETDATE() AS DATE)
+      ORDER BY date_time DESC
+      OFFSET @offset ROWS FETCH NEXT @limit ROWS ONLY
+    `, { offset, limit: limitNum });
+
+    console.log(`✅ Found ${result.recordset.length} receiving scans (Page ${pageNum}, Total: ${total})`);
+
+    res.json({
+      success: true,
+      data: result.recordset,
+      pagination: {
+        page: pageNum,
+        limit: limitNum,
+        total: total,
+        totalPages: Math.ceil(total / limitNum)
+      }
+    });
+
+  } catch (err) {
+    console.error('❌ Get today receiving error:', err);
+    res.status(500).json({ 
+      success: false,
+      error: 'Failed to fetch today receiving',
+      message: err.message 
+    });
+  }
+});
+
+/**
  * POST /api/receiving/scan
- * ✅ SESUAI PHP: controller_scan.php line 264-399 (getscanrec)
- * Scan barcode untuk receiving dengan validasi:
- * 1. Cek maintenance time (07:30:00 - 07:30:06)
- * 2. Validasi position user harus RECEIVING atau IT
- * 3. Cari barcode di master_database
- * 4. Generate scan_no otomatis (max + 1 untuk hari ini)
- * 5. Insert ke table receiving dengan semua data dari master_database
+ * ✅ Scan barcode untuk receiving
  */
 router.post('/scan', verifyToken, async (req, res) => {
   try {
@@ -71,7 +127,6 @@ router.post('/scan', verifyToken, async (req, res) => {
 
     console.log('📷 Scan receiving:', { barcode, username, position });
 
-    // Validasi input
     if (!barcode || barcode.trim() === '') {
       console.warn('❌ Barcode empty');
       return res.status(400).json({ 
@@ -81,14 +136,14 @@ router.post('/scan', verifyToken, async (req, res) => {
       });
     }
 
-    // 1. CHECK MAINTENANCE TIME (07:30:00 - 07:30:06)
+    // 1. CHECK MAINTENANCE TIME
     const now = new Date();
     const hours = now.getHours();
     const minutes = now.getMinutes();
     const seconds = now.getSeconds();
     const currentTime = hours * 3600 + minutes * 60 + seconds;
-    const maintenanceStart = 7 * 3600 + 30 * 60 + 0; // 07:30:00
-    const maintenanceEnd = 7 * 3600 + 30 * 60 + 6;   // 07:30:06
+    const maintenanceStart = 7 * 3600 + 30 * 60 + 0;
+    const maintenanceEnd = 7 * 3600 + 30 * 60 + 6;
 
     if (currentTime >= maintenanceStart && currentTime <= maintenanceEnd) {
       console.warn('⚠️ Maintenance time - Transaction blocked');
@@ -99,7 +154,7 @@ router.post('/scan', verifyToken, async (req, res) => {
       });
     }
 
-    // 2. VALIDASI POSITION (harus RECEIVING atau IT)
+    // 2. VALIDASI POSITION
     if (position !== 'RECEIVING' && position !== 'IT') {
       console.warn(`❌ Invalid position: ${position}`);
       return res.status(403).json({
@@ -129,10 +184,8 @@ router.post('/scan', verifyToken, async (req, res) => {
       WHERE original_barcode = @barcode
     `, { barcode: barcode.trim() });
 
-    console.log('🔍 Master data result:', masterData.recordset.length, 'rows');
-
     if (masterData.recordset.length === 0) {
-      console.warn(`❌ Barcode not found in master_database: ${barcode}`);
+      console.warn(`❌ Barcode not found: ${barcode}`);
       return res.status(404).json({
         success: false,
         error: 'BARCODE_NOT_FOUND',
@@ -141,7 +194,6 @@ router.post('/scan', verifyToken, async (req, res) => {
     }
 
     const data = masterData.recordset[0];
-    console.log('✅ Barcode found:', data);
 
     // 4. GET USER DESCRIPTION
     const userData = await query(
@@ -149,12 +201,9 @@ router.post('/scan', verifyToken, async (req, res) => {
       { username }
     );
     const description = userData.recordset[0]?.description || '';
-    console.log('👤 User description:', description);
 
-    // 5. GENERATE SCAN_NO (MAX + 1 untuk hari ini)
-    const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
-    console.log('📅 Today:', today);
-    
+    // 5. GENERATE SCAN_NO
+    const today = new Date().toISOString().slice(0, 10);
     const scanNoResult = await query(`
       SELECT ISNULL(MAX(scan_no), 0) as max_scan_no
       FROM [Backup_hskpro].[dbo].[receiving]
@@ -162,11 +211,8 @@ router.post('/scan', verifyToken, async (req, res) => {
     `, { today });
     
     const scan_no = scanNoResult.recordset[0].max_scan_no + 1;
-    console.log('🔢 New scan_no:', scan_no);
 
     // 6. INSERT KE TABLE RECEIVING
-    console.log('💾 Inserting to receiving table...');
-    
     await query(`
       INSERT INTO [Backup_hskpro].[dbo].[receiving]
       (original_barcode, brand, color, size, four_digit, unit, quantity, 
@@ -193,7 +239,7 @@ router.post('/scan', verifyToken, async (req, res) => {
 
     console.log(`✅ Scan receiving berhasil: ${barcode}, scan_no: ${scan_no}`);
 
-    // 7. SOCKET.IO EMIT (optional)
+    // 7. SOCKET.IO EMIT
     const io = req.app.get('io');
     if (io) {
       io.emit('dashboard:update', {
@@ -207,7 +253,6 @@ router.post('/scan', verifyToken, async (req, res) => {
         scan_no,
         timestamp: new Date().toISOString()
       });
-      console.log('📡 Socket.IO event emitted');
     }
 
     // 8. RESPONSE
@@ -228,58 +273,11 @@ router.post('/scan', verifyToken, async (req, res) => {
 
   } catch (err) {
     console.error('❌ Scan receiving error:', err);
-    console.error('❌ Error stack:', err.stack);
     res.status(500).json({ 
       success: false,
       error: 'SCAN_FAILED',
       message: 'Gagal melakukan scan',
       details: err.message 
-    });
-  }
-});
-
-/**
- * DELETE /api/receiving/:date/:scan/:user
- * Delete receiving record (IT, MANAGEMENT only)
- */
-router.delete('/:date/:scan/:user', verifyToken, verifyRole(['IT', 'MANAGEMENT']), async (req, res) => {
-  try {
-    const { date, scan, user } = req.params;
-
-    console.log('🗑️ Delete receiving:', { date, scan, user });
-
-    // Check if record exists
-    const existing = await query(
-      'SELECT scan_no FROM [Backup_hskpro].[dbo].[receiving] WHERE date_time = @date AND scan_no = @scan AND username = @user',
-      { date, scan: parseInt(scan), user }
-    );
-
-    if (existing.recordset.length === 0) {
-      return res.status(404).json({
-        success: false,
-        error: 'Record not found'
-      });
-    }
-
-    // Delete record
-    await query(
-      'DELETE FROM [Backup_hskpro].[dbo].[receiving] WHERE date_time = @date AND scan_no = @scan AND username = @user',
-      { date, scan: parseInt(scan), user }
-    );
-
-    console.log('✅ Receiving record deleted');
-
-    res.json({
-      success: true,
-      message: 'Record deleted successfully'
-    });
-
-  } catch (err) {
-    console.error('❌ Delete receiving error:', err);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to delete record',
-      message: err.message
     });
   }
 });
