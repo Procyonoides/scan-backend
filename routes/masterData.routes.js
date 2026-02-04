@@ -659,6 +659,8 @@ router.post('/import-stock-opname', verifyToken, verifyRole(['IT']), upload.sing
     }
 
     console.log(`📊 Found ${data.length} records to process`);
+    console.log('📋 First row keys:', Object.keys(data[0]));
+    console.log('📋 First row data:', data[0]);
 
     let successCount = 0;
     let errorCount = 0;
@@ -669,15 +671,15 @@ router.post('/import-stock-opname', verifyToken, verifyRole(['IT']), upload.sing
       try {
         const row = data[i];
         
-        // ✅ Get column A (original_barcode) dan N (stock)
+        // ✅ Get column A (original_barcode) dan stock column (flexible: can be C, N, or any column)
         // Excel data will be parsed with headers, so we need to check the actual keys
         const keys = Object.keys(row);
         
         // Try to find barcode column (could be 'A', 'original_barcode', or first column)
         let barcode = row['A'] || row['original_barcode'] || row[keys[0]];
         
-        // Try to find stock column (could be 'N', 'stock', 'Stock', or 14th column)
-        let stock = row['N'] || row['stock'] || row['Stock'] || row[keys[13]];
+        // Try to find stock column (multiple fallbacks: N, C, stock, Stock)
+        let stock = row['N'] || row['C'] || row['stock'] || row['Stock'] || row[keys[1]] || row[keys[2]];
         
         if (!barcode) {
           errors.push(`Row ${i + 1}: Missing barcode in column A`);
@@ -686,7 +688,7 @@ router.post('/import-stock-opname', verifyToken, verifyRole(['IT']), upload.sing
         }
 
         if (stock === undefined || stock === null || stock === '') {
-          errors.push(`Row ${i + 1}: Missing stock in column N`);
+          errors.push(`Row ${i + 1}: Missing stock value. Expected in column C, N, or with header "stock". Row data: ${JSON.stringify(row)}`);
           errorCount++;
           continue;
         }
@@ -721,10 +723,14 @@ router.post('/import-stock-opname', verifyToken, verifyRole(['IT']), upload.sing
       } catch (err) {
         errors.push(`Row ${i + 1}: ${err.message}`);
         errorCount++;
+        console.error(`❌ Row ${i + 1} error:`, err.message);
       }
     }
 
     console.log(`✅ Stock opname import complete: ${successCount} success, ${errorCount} errors`);
+    if (errors.length > 0) {
+      console.log('📋 Errors:', errors);
+    }
 
     res.json({
       success: true,

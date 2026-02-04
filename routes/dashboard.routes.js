@@ -6,11 +6,22 @@ const { verifyToken } = require('../middleware/auth.middleware');
 /**
  * GET /api/dashboard/warehouse-stats
  * ✅ SESUAI PHP: controller_monitoring.php line 874-890
- * Data dari table stok untuk hari ini
+ * Data dari table stok untuk hari ini, atau calculate jika belum ada
  */
 router.get('/warehouse-stats', verifyToken, async (req, res) => {
   try {
     console.log('📦 Fetching warehouse stats...');
+    
+    // Get scan counts and total quantities for today
+    const scanResult = await query(`
+      SELECT 
+        ISNULL((SELECT COUNT(*) FROM [Backup_hskpro].[dbo].[receiving] WHERE CAST(date_time AS DATE) = CAST(GETDATE() AS DATE)), 0) as receiving_count,
+        ISNULL((SELECT SUM(quantity) FROM [Backup_hskpro].[dbo].[receiving] WHERE CAST(date_time AS DATE) = CAST(GETDATE() AS DATE)), 0) as receiving_qty,
+        ISNULL((SELECT COUNT(*) FROM [Backup_hskpro].[dbo].[shipping] WHERE CAST(date_time AS DATE) = CAST(GETDATE() AS DATE)), 0) as shipping_count,
+        ISNULL((SELECT SUM(quantity) FROM [Backup_hskpro].[dbo].[shipping] WHERE CAST(date_time AS DATE) = CAST(GETDATE() AS DATE)), 0) as shipping_qty
+    `);
+    
+    const scanStats = scanResult.recordset[0] || {};
     
     // PHP: Mengambil data dari table stok untuk hari ini
     const result = await query(`
@@ -25,17 +36,51 @@ router.get('/warehouse-stats', verifyToken, async (req, res) => {
     `);
     
     if (result.recordset.length === 0) {
-      console.warn('⚠️ No stok data for today, returning zeros');
-      return res.json({
-        first_stock: 0,
-        receiving: 0,
-        shipping: 0,
-        warehouse_stock: 0
-      });
+      console.warn('⚠️ No stok data for today, calculating from master_database & transaction tables');
+      
+      // Get yesterday's warehouse stock as first_stock
+      const firstStockResult = await query(`
+        SELECT TOP 1 ISNULL(stock_akhir, 0) as first_stock
+        FROM [Backup_hskpro].[dbo].[stok]
+        WHERE CAST(date AS DATE) = CAST(DATEADD(day, -1, GETDATE()) AS DATE)
+        ORDER BY date DESC
+      `);
+      
+      const firstStock = firstStockResult.recordset.length > 0 ? firstStockResult.recordset[0].first_stock : 0;
+      
+      // Calculate warehouse stock from master_database if no stok record exists
+      const warehouseStockResult = await query(`
+        SELECT ISNULL(SUM(stock), 0) as warehouse_stock
+        FROM [Backup_hskpro].[dbo].[master_database]
+      `);
+      
+      const warehouseStock = warehouseStockResult.recordset[0]?.warehouse_stock || 0;
+      
+      const response = {
+        first_stock: firstStock,
+        receiving: scanStats.receiving_count,
+        receiving_qty: scanStats.receiving_qty,
+        shipping: scanStats.shipping_count,
+        shipping_qty: scanStats.shipping_qty,
+        warehouse_stock: warehouseStock
+      };
+      
+      console.log('✅ Warehouse stats (calculated):', response);
+      return res.json(response);
     }
     
-    console.log('✅ Warehouse stats:', result.recordset[0]);
-    res.json(result.recordset[0]);
+    // If stok record exists, use actual scan counts and quantities
+    const response = {
+      first_stock: result.recordset[0].first_stock,
+      receiving: scanStats.receiving_count,
+      receiving_qty: scanStats.receiving_qty,
+      shipping: scanStats.shipping_count,
+      shipping_qty: scanStats.shipping_qty,
+      warehouse_stock: result.recordset[0].warehouse_stock
+    };
+    
+    console.log('✅ Warehouse stats:', response);
+    res.json(response);
   } catch (err) {
     console.error('❌ Warehouse stats error:', err);
     res.status(500).json({ error: 'Failed to fetch warehouse stats', message: err.message });
