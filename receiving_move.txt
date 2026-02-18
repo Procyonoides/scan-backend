@@ -1,0 +1,59 @@
+
+/**
+ * POST /api/receiving/move
+ * Move receiving data (before 07:30:00) to data_receiving archive (IT only)
+ */
+router.post('/move', verifyToken, verifyRole(['IT']), async (req, res) => {
+  try {
+    const today = new Date().toISOString().slice(0, 10);
+    const cutoffDate = `${today} 07:30:00`;
+
+    console.log('📦 Archiving receiving data before:', cutoffDate);
+
+    // 1. Check if there is data to move
+    const checkData = await query(`
+      SELECT COUNT(*) as count FROM [Backup_hskpro].[dbo].[receiving]
+      WHERE date_time < @cutoffDate
+    `, { cutoffDate });
+
+    const dataCount = checkData.recordset[0].count;
+
+    if (dataCount === 0) {
+      return res.json({
+        success: true,
+        message: 'Tidak ada data untuk dipindahkan (semua data hari ini setelah jam 07:30)',
+        count: 0
+      });
+    }
+
+    // 2. Perform Move (Insert then Delete)
+    await query(`
+      INSERT INTO [Backup_hskpro].[dbo].[data_receiving]
+      SELECT * FROM [Backup_hskpro].[dbo].[receiving]
+      WHERE date_time < @cutoffDate
+    `, { cutoffDate });
+
+    await query(`
+      DELETE FROM [Backup_hskpro].[dbo].[receiving]
+      WHERE date_time < @cutoffDate
+    `, { cutoffDate });
+
+    console.log(`✅ Archived ${dataCount} receiving records to history`);
+
+    res.json({
+      success: true,
+      message: `${dataCount} data berhasil dipindahkan ke history`,
+      count: dataCount
+    });
+
+  } catch (err) {
+    console.error('❌ Move receiving data error:', err);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to move receiving data',
+      message: err.message
+    });
+  }
+});
+
+module.exports = router;

@@ -1,85 +1,106 @@
 const express = require('express');
 const router = express.Router();
-const { query } = require('../config/database');
-const { verifyToken } = require('../middleware/auth.middleware');
+const { query, dbName } = require('../config/database');
+const { verifyToken, verifyRole } = require('../middleware/auth.middleware');
+
+/**
+ * ========== STOCK MONITORING LOGIC (dari hskpro) ==========
+ * 
+ * Table: [stok] - Menyimpan summary stok harian
+ * Columns:
+ *  - date: Tanggal
+ *  - stock_awal: Stok awal hari (first_stock) = stok akhir hari sebelumnya
+ *  - receiving: COUNT receiving yang masuk hari ini
+ *  - shipping: COUNT shipping yang keluar hari ini
+ *  - stock_akhir: Stok akhir hari = stock_awal + receiving - shipping
+ * 
+ * Dashboard Stats:
+ *  1. first_stock: Stock awal hari = kemarin's stock_akhir (jika table stok tidak ada hari ini)
+ *  2. receiving: COUNT receiving scans hari ini (real-time dari tabel receiving)
+ *  3. shipping: COUNT shipping scans hari ini (real-time dari tabel shipping)
+ *  4. warehouse_stock: SUM(stock) dari master_database (current state)
+ * 
+ * Flow:
+ *  - Jika ada stok record untuk hari ini: Gunakan data dari stok table
+ *  - Jika belum ada stok record: Hitung dari kemarin's ending stock + today's transactions
+ */
 
 /**
  * GET /api/dashboard/warehouse-stats
- * ✅ SESUAI PHP: controller_monitoring.php line 874-890
- * Data dari table stok untuk hari ini, atau calculate jika belum ada
+ * ✅ Stock Monitoring Dashboard
+ * first_stock = stok_awal (dari hari kemarin atau dari stok table)
+ * receiving = count receiving scans hari ini
+ * shipping = count shipping scans hari ini
+ * warehouse_stock = SUM(stock) dari master_database
  */
-router.get('/warehouse-stats', verifyToken, async (req, res) => {
+router.get('/warehouse-stats', verifyToken, verifyRole(['IT', 'MANAGEMENT']), async (req, res) => {
   try {
     console.log('📦 Fetching warehouse stats...');
-    
-    // Get scan counts and total quantities for today
+
+    // 1. Get today's scan counts and quantities
     const scanResult = await query(`
       SELECT 
-        ISNULL((SELECT COUNT(*) FROM [Backup_hskpro].[dbo].[receiving] WHERE CAST(date_time AS DATE) = CAST(GETDATE() AS DATE)), 0) as receiving_count,
-        ISNULL((SELECT SUM(quantity) FROM [Backup_hskpro].[dbo].[receiving] WHERE CAST(date_time AS DATE) = CAST(GETDATE() AS DATE)), 0) as receiving_qty,
-        ISNULL((SELECT COUNT(*) FROM [Backup_hskpro].[dbo].[shipping] WHERE CAST(date_time AS DATE) = CAST(GETDATE() AS DATE)), 0) as shipping_count,
-        ISNULL((SELECT SUM(quantity) FROM [Backup_hskpro].[dbo].[shipping] WHERE CAST(date_time AS DATE) = CAST(GETDATE() AS DATE)), 0) as shipping_qty
+        ISNULL((SELECT COUNT(*) FROM [${dbName}].[dbo].[receiving] WHERE CAST(date_time AS DATE) = CAST(GETDATE() AS DATE)), 0) as receiving_count,
+        ISNULL((SELECT SUM(quantity) FROM [${dbName}].[dbo].[receiving] WHERE CAST(date_time AS DATE) = CAST(GETDATE() AS DATE)), 0) as receiving_qty,
+        ISNULL((SELECT COUNT(*) FROM [${dbName}].[dbo].[shipping] WHERE CAST(date_time AS DATE) = CAST(GETDATE() AS DATE)), 0) as shipping_count,
+        ISNULL((SELECT SUM(quantity) FROM [${dbName}].[dbo].[shipping] WHERE CAST(date_time AS DATE) = CAST(GETDATE() AS DATE)), 0) as shipping_qty
     `);
-    
+
     const scanStats = scanResult.recordset[0] || {};
-    
-    // PHP: Mengambil data dari table stok untuk hari ini
-    const result = await query(`
+
+    // 2. Try to get today's stok record first
+    const stokResult = await query(`
       SELECT TOP 1
         ISNULL(stock_awal, 0) as first_stock,
-        ISNULL(receiving, 0) as receiving,
-        ISNULL(shipping, 0) as shipping,
         ISNULL(stock_akhir, 0) as warehouse_stock
-      FROM [Backup_hskpro].[dbo].[stok]
+      FROM [${dbName}].[dbo].[stok]
       WHERE CAST(date AS DATE) = CAST(GETDATE() AS DATE)
       ORDER BY date DESC
     `);
-    
-    if (result.recordset.length === 0) {
-      console.warn('⚠️ No stok data for today, calculating from master_database & transaction tables');
-      
-      // Get yesterday's warehouse stock as first_stock
-      const firstStockResult = await query(`
-        SELECT TOP 1 ISNULL(stock_akhir, 0) as first_stock
-        FROM [Backup_hskpro].[dbo].[stok]
+
+    let firstStock = 0;
+    let warehouseStock = 0;
+
+    if (stokResult.recordset.length > 0) {
+      // If stok record exists for today, use it
+      firstStock = stokResult.recordset[0].first_stock;
+      warehouseStock = stokResult.recordset[0].warehouse_stock;
+      console.log('✅ Today stok record found:', { firstStock, warehouseStock });
+    } else {
+      // If no stok record for today, calculate from yesterday and master_database
+      console.warn('⚠️ No stok record for today, calculating from yesterday + master_database');
+
+      // Get yesterday's stock_akhir as today's stock_awal
+      const yesterdayResult = await query(`
+        SELECT TOP 1 ISNULL(stock_akhir, 0) as yesterday_stock
+        FROM [${dbName}].[dbo].[stok]
         WHERE CAST(date AS DATE) = CAST(DATEADD(day, -1, GETDATE()) AS DATE)
         ORDER BY date DESC
       `);
-      
-      const firstStock = firstStockResult.recordset.length > 0 ? firstStockResult.recordset[0].first_stock : 0;
-      
-      // Calculate warehouse stock from master_database if no stok record exists
-      const warehouseStockResult = await query(`
+
+      firstStock = yesterdayResult.recordset.length > 0 ? yesterdayResult.recordset[0].yesterday_stock : 0;
+
+      // Get current warehouse stock from master_database
+      const warehouseResult = await query(`
         SELECT ISNULL(SUM(stock), 0) as warehouse_stock
-        FROM [Backup_hskpro].[dbo].[master_database]
+        FROM [${dbName}].[dbo].[master_database]
       `);
-      
-      const warehouseStock = warehouseStockResult.recordset[0]?.warehouse_stock || 0;
-      
-      const response = {
-        first_stock: firstStock,
-        receiving: scanStats.receiving_count,
-        receiving_qty: scanStats.receiving_qty,
-        shipping: scanStats.shipping_count,
-        shipping_qty: scanStats.shipping_qty,
-        warehouse_stock: warehouseStock
-      };
-      
-      console.log('✅ Warehouse stats (calculated):', response);
-      return res.json(response);
+
+      warehouseStock = warehouseResult.recordset[0]?.warehouse_stock || 0;
+
+      console.log('📊 Calculated stats:', { firstStock, warehouseStock, receivingCount: scanStats.receiving_count });
     }
-    
-    // If stok record exists, use actual scan counts and quantities
+
     const response = {
-      first_stock: result.recordset[0].first_stock,
+      first_stock: firstStock,
       receiving: scanStats.receiving_count,
       receiving_qty: scanStats.receiving_qty,
       shipping: scanStats.shipping_count,
       shipping_qty: scanStats.shipping_qty,
-      warehouse_stock: result.recordset[0].warehouse_stock
+      warehouse_stock: warehouseStock
     };
-    
-    console.log('✅ Warehouse stats:', response);
+
+    console.log('✅ Final warehouse stats:', response);
     res.json(response);
   } catch (err) {
     console.error('❌ Warehouse stats error:', err);
@@ -92,23 +113,23 @@ router.get('/warehouse-stats', verifyToken, async (req, res) => {
  * ✅ SESUAI PHP: model_monitoring.php line 148-154 (get_data_daily)
  * Chart TOP 7 hari dari table stok, ORDER BY date DESC
  */
-router.get('/daily-chart', verifyToken, async (req, res) => {
+router.get('/daily-chart', verifyToken, verifyRole(['IT', 'MANAGEMENT']), async (req, res) => {
   try {
     console.log('📈 Fetching daily chart from stok table...');
-    
+
     // PHP: SELECT TOP 7, ORDER BY date DESC, lalu di-reverse
     const result = await query(`
       SELECT TOP 7 
         CONVERT(VARCHAR, date, 23) AS date,
         ISNULL(receiving, 0) as receiving,
         ISNULL(shipping, 0) as shipping
-      FROM [Backup_hskpro].[dbo].[stok]
+      FROM [${dbName}].[dbo].[stok]
       ORDER BY date DESC
     `);
-    
+
     // Reverse untuk urutan ascending (oldest to newest)
     const reversed = result.recordset.reverse();
-    
+
     console.log('✅ Daily chart data:', reversed.length, 'records');
     res.json(reversed);
   } catch (err) {
@@ -124,18 +145,18 @@ router.get('/daily-chart', verifyToken, async (req, res) => {
  * $yesterday = date('Y-m-d',strtotime("-1 day")) . ' 07:30:00'
  * Jadi query mengambil data dari kemarin 07:30:01 sampai sekarang
  */
-router.get('/shift-scan', verifyToken, async (req, res) => {
+router.get('/shift-scan', verifyToken, verifyRole(['IT', 'MANAGEMENT']), async (req, res) => {
   try {
     console.log('👥 Fetching shift scan (after yesterday 07:30:00)...');
-    
+
     // Calculate yesterday 07:30:00
     const yesterday = new Date();
     yesterday.setDate(yesterday.getDate() - 1);
     yesterday.setHours(7, 30, 0, 0);
     const yesterdayStr = yesterday.toISOString().slice(0, 19).replace('T', ' ');
-    
+
     console.log('📅 Yesterday timestamp:', yesterdayStr);
-    
+
     // CRITICAL: PHP pakai date_time > '$yesterday' (greater than, bukan equal)
     // Artinya: data SETELAH kemarin 07:30:00 sampai sekarang
     const result = await query(`
@@ -143,7 +164,7 @@ router.get('/shift-scan', verifyToken, async (req, res) => {
         username,
         CAST(SUM(quantity) * 100.0 / NULLIF((
           SELECT SUM(quantity) 
-          FROM [Backup_hskpro].[dbo].[data_receiving] 
+          FROM [${dbName}].[dbo].[data_receiving] 
           WHERE date_time > @yesterday
           AND description = 'INCOME' 
           AND production = 'PT HSK REMBANG'
@@ -151,7 +172,7 @@ router.get('/shift-scan', verifyToken, async (req, res) => {
         REPLACE(
           CAST(SUM(quantity) * 100.0 / NULLIF((
             SELECT SUM(quantity) 
-            FROM [Backup_hskpro].[dbo].[data_receiving] 
+            FROM [${dbName}].[dbo].[data_receiving] 
             WHERE date_time > @yesterday
             AND description = 'INCOME' 
             AND production = 'PT HSK REMBANG'
@@ -159,14 +180,14 @@ router.get('/shift-scan', verifyToken, async (req, res) => {
           '.', ','
         ) AS [percent],
         SUM(quantity) AS total
-      FROM [Backup_hskpro].[dbo].[data_receiving]
+      FROM [${dbName}].[dbo].[data_receiving]
       WHERE date_time > @yesterday
       AND description = 'INCOME' 
       AND production = 'PT HSK REMBANG'
       GROUP BY username
       ORDER BY username
     `, { yesterday: yesterdayStr });
-    
+
     console.log('✅ Shift scan data:', result.recordset.length, 'records');
     res.json(result.recordset);
   } catch (err) {
@@ -181,24 +202,24 @@ router.get('/shift-scan', verifyToken, async (req, res) => {
  * Chart warehouse berdasarkan item dari master_database
  * PHP tidak filter stock > 0, tapi grouping langsung
  */
-router.get('/warehouse-items', verifyToken, async (req, res) => {
+router.get('/warehouse-items', verifyToken, verifyRole(['IT', 'MANAGEMENT']), async (req, res) => {
   try {
     console.log('📦 Fetching warehouse items...');
-    
+
     // CRITICAL: PHP tidak pakai WHERE stock > 0
     // Query langsung GROUP BY item tanpa filter
     const result = await query(`
       SELECT 
         item,
         CAST(SUM(stock) * 100.0 / ISNULL(NULLIF((
-          SELECT SUM(stock) FROM [Backup_hskpro].[dbo].[master_database]
+          SELECT SUM(stock) FROM [${dbName}].[dbo].[master_database]
         ), 0), 1) AS DECIMAL(10, 0)) AS status,
         SUM(stock) AS total
-      FROM [Backup_hskpro].[dbo].[master_database]
+      FROM [${dbName}].[dbo].[master_database]
       GROUP BY item
       ORDER BY total DESC
     `);
-    
+
     console.log('✅ Warehouse items:', result.recordset.length, 'items');
     res.json(result.recordset);
   } catch (err) {
@@ -212,10 +233,10 @@ router.get('/warehouse-items', verifyToken, async (req, res) => {
  * ✅ SESUAI PHP: controller_monitoring.php line 939-943
  * List scan receiving HARI INI (TOP 5 di PHP, TOP 10 di Angular)
  */
-router.get('/receiving-list', verifyToken, async (req, res) => {
+router.get('/receiving-list', verifyToken, verifyRole(['IT', 'MANAGEMENT']), async (req, res) => {
   try {
     console.log('📥 Fetching receiving list...');
-    
+
     // PHP pakai TOP 5, tapi Angular bisa pakai TOP 10 untuk lebih informatif
     const result = await query(`
       SELECT TOP 10
@@ -227,10 +248,10 @@ router.get('/receiving-list', verifyToken, async (req, res) => {
         quantity,
         username,
         scan_no
-      FROM [Backup_hskpro].[dbo].[receiving]
+      FROM [${dbName}].[dbo].[receiving]
       ORDER BY date_time DESC
     `);
-    
+
     console.log('✅ Receiving list:', result.recordset.length, 'items');
     res.json(result.recordset);
   } catch (err) {
@@ -244,10 +265,10 @@ router.get('/receiving-list', verifyToken, async (req, res) => {
  * ✅ SESUAI PHP: controller_monitoring.php line 944-948
  * List scan shipping HARI INI (TOP 5 di PHP, TOP 10 di Angular)
  */
-router.get('/shipping-list', verifyToken, async (req, res) => {
+router.get('/shipping-list', verifyToken, verifyRole(['IT', 'MANAGEMENT']), async (req, res) => {
   try {
     console.log('📤 Fetching shipping list...');
-    
+
     // PHP pakai TOP 5, tapi Angular bisa pakai TOP 10 untuk lebih informatif
     const result = await query(`
       SELECT TOP 10
@@ -259,10 +280,10 @@ router.get('/shipping-list', verifyToken, async (req, res) => {
         quantity,
         username,
         scan_no
-      FROM [Backup_hskpro].[dbo].[shipping]
+      FROM [${dbName}].[dbo].[shipping]
       ORDER BY date_time DESC
     `);
-    
+
     console.log('✅ Shipping list:', result.recordset.length, 'items');
     res.json(result.recordset);
   } catch (err) {

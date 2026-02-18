@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { query } = require('../config/database');
+const { query, dbName } = require('../config/database');
 const { verifyToken, verifyRole } = require('../middleware/auth.middleware');
 
 // ==================== MODEL ROUTES ====================
@@ -9,7 +9,7 @@ const { verifyToken, verifyRole } = require('../middleware/auth.middleware');
  * GET /api/options/models
  * Get all models with pagination
  */
-router.get('/models', verifyToken, async (req, res) => {
+router.get('/models', verifyToken, verifyRole(['IT', 'MANAGEMENT']), async (req, res) => {
   try {
     const { page = 1, limit = 10, search = '' } = req.query;
 
@@ -29,7 +29,7 @@ router.get('/models', verifyToken, async (req, res) => {
 
     // Get total count
     const countResult = await query(
-      `SELECT COUNT(*) as total FROM [Backup_hskpro].[dbo].[list_model] ${searchCondition}`,
+      `SELECT COUNT(*) as total FROM [${dbName}].[dbo].[list_model] ${searchCondition}`,
       search && search.trim() !== '' ? { search: params.search } : {}
     );
     const total = countResult.recordset[0].total;
@@ -37,14 +37,14 @@ router.get('/models', verifyToken, async (req, res) => {
     // Get data with pagination
     const result = await query(`
       SELECT model_code, model
-      FROM [Backup_hskpro].[dbo].[list_model]
+      FROM [${dbName}].[dbo].[list_model]
       ${searchCondition}
       ORDER BY model_code
       OFFSET @offset ROWS FETCH NEXT @limit ROWS ONLY
     `, params);
-    
+
     console.log(`✅ Found ${result.recordset.length} models (Total: ${total})`);
-    
+
     res.json({
       success: true,
       data: result.recordset,
@@ -57,10 +57,10 @@ router.get('/models', verifyToken, async (req, res) => {
     });
   } catch (err) {
     console.error('❌ Get models error:', err);
-    res.status(500).json({ 
+    res.status(500).json({
       success: false,
       error: 'Failed to fetch models',
-      message: err.message 
+      message: err.message
     });
   }
 });
@@ -74,9 +74,9 @@ router.post('/models', verifyToken, verifyRole(['IT']), async (req, res) => {
     const { model_code, model } = req.body;
 
     if (!model_code || !model) {
-      return res.status(400).json({ 
+      return res.status(400).json({
         success: false,
-        error: 'Model code and model name are required' 
+        error: 'Model code and model name are required'
       });
     }
 
@@ -84,34 +84,34 @@ router.post('/models', verifyToken, verifyRole(['IT']), async (req, res) => {
 
     // Check if model_code exists
     const existing = await query(
-      'SELECT model_code FROM [Backup_hskpro].[dbo].[list_model] WHERE model_code = @code',
+      'SELECT model_code FROM [${dbName}].[dbo].[list_model] WHERE model_code = @code',
       { code: model_code }
     );
 
     if (existing.recordset.length > 0) {
-      return res.status(400).json({ 
+      return res.status(400).json({
         success: false,
-        error: 'Model code already exists' 
+        error: 'Model code already exists'
       });
     }
 
     // Insert
     await query(`
-      INSERT INTO [Backup_hskpro].[dbo].[list_model] (model_code, model)
+      INSERT INTO [${dbName}].[dbo].[list_model] (model_code, model)
       VALUES (@code, @model)
     `, { code: model_code, model });
 
     console.log('✅ Model created:', model_code);
-    res.status(201).json({ 
+    res.status(201).json({
       success: true,
-      message: 'Model created successfully' 
+      message: 'Model created successfully'
     });
   } catch (err) {
     console.error('❌ Create model error:', err);
-    res.status(500).json({ 
+    res.status(500).json({
       success: false,
       error: 'Failed to create model',
-      message: err.message 
+      message: err.message
     });
   }
 });
@@ -126,9 +126,9 @@ router.put('/models/:code', verifyToken, verifyRole(['IT']), async (req, res) =>
     const { model } = req.body;
 
     if (!model) {
-      return res.status(400).json({ 
+      return res.status(400).json({
         success: false,
-        error: 'Model name is required' 
+        error: 'Model name is required'
       });
     }
 
@@ -136,35 +136,35 @@ router.put('/models/:code', verifyToken, verifyRole(['IT']), async (req, res) =>
 
     // Check if exists
     const existing = await query(
-      'SELECT model_code FROM [Backup_hskpro].[dbo].[list_model] WHERE model_code = @code',
+      'SELECT model_code FROM [${dbName}].[dbo].[list_model] WHERE model_code = @code',
       { code }
     );
 
     if (existing.recordset.length === 0) {
-      return res.status(404).json({ 
+      return res.status(404).json({
         success: false,
-        error: 'Model not found' 
+        error: 'Model not found'
       });
     }
 
     // Update
     await query(`
-      UPDATE [Backup_hskpro].[dbo].[list_model]
+      UPDATE [${dbName}].[dbo].[list_model]
       SET model = @model
       WHERE model_code = @code
     `, { code, model });
 
     console.log('✅ Model updated:', code);
-    res.json({ 
+    res.json({
       success: true,
-      message: 'Model updated successfully' 
+      message: 'Model updated successfully'
     });
   } catch (err) {
     console.error('❌ Update model error:', err);
-    res.status(500).json({ 
+    res.status(500).json({
       success: false,
       error: 'Failed to update model',
-      message: err.message 
+      message: err.message
     });
   }
 });
@@ -181,34 +181,81 @@ router.delete('/models/:code', verifyToken, verifyRole(['IT']), async (req, res)
 
     // Check if exists
     const existing = await query(
-      'SELECT model_code FROM [Backup_hskpro].[dbo].[list_model] WHERE model_code = @code',
+      'SELECT model_code FROM [${dbName}].[dbo].[list_model] WHERE model_code = @code',
       { code }
     );
 
     if (existing.recordset.length === 0) {
-      return res.status(404).json({ 
+      return res.status(404).json({
         success: false,
-        error: 'Model not found' 
+        error: 'Model not found'
       });
     }
 
     // Delete
     await query(
-      'DELETE FROM [Backup_hskpro].[dbo].[list_model] WHERE model_code = @code',
+      'DELETE FROM [${dbName}].[dbo].[list_model] WHERE model_code = @code',
       { code }
     );
 
     console.log('✅ Model deleted:', code);
-    res.json({ 
+    res.json({
       success: true,
-      message: 'Model deleted successfully' 
+      message: 'Model deleted successfully'
     });
   } catch (err) {
     console.error('❌ Delete model error:', err);
-    res.status(500).json({ 
+    res.status(500).json({
       success: false,
       error: 'Failed to delete model',
-      message: err.message 
+      message: err.message
+    });
+  }
+});
+
+/**
+ * POST /api/options/models/batch-delete
+ * Batch delete models (IT only)
+ */
+router.post('/models/batch-delete', verifyToken, verifyRole(['IT']), async (req, res) => {
+  try {
+    const { codes } = req.body;
+
+    if (!codes || !Array.isArray(codes) || codes.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'Codes array is required'
+      });
+    }
+
+    console.log('🗑️ Batch deleting models:', codes.length);
+
+    // SQL Server doesn't support arrays directly in IN clause easily with mssql library mapping
+    // We'll construct the query dynamically with parameters
+    const params = {};
+    const placeholders = codes.map((code, i) => {
+      const paramName = `code${i}`;
+      params[paramName] = code;
+      return `@${paramName}`;
+    }).join(',');
+
+    await query(
+      `DELETE FROM [${dbName}].[dbo].[list_model] WHERE model_code IN (${placeholders})`,
+      params
+    );
+
+    console.log(`✅ Batch deleted ${codes.length} models`);
+    res.json({
+      success: true,
+      message: `${codes.length} models deleted successfully`,
+      count: codes.length
+    });
+  } catch (err) {
+    console.error('❌ Batch delete models error:', err);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to batch delete models',
+      message: err.message
     });
   }
 });
@@ -219,7 +266,7 @@ router.delete('/models/:code', verifyToken, verifyRole(['IT']), async (req, res)
  * GET /api/options/sizes
  * Get all sizes with pagination
  */
-router.get('/sizes', verifyToken, async (req, res) => {
+router.get('/sizes', verifyToken, verifyRole(['IT', 'MANAGEMENT']), async (req, res) => {
   try {
     const { page = 1, limit = 10, search = '' } = req.query;
 
@@ -239,7 +286,7 @@ router.get('/sizes', verifyToken, async (req, res) => {
 
     // Get total count
     const countResult = await query(
-      `SELECT COUNT(*) as total FROM [Backup_hskpro].[dbo].[list_size] ${searchCondition}`,
+      `SELECT COUNT(*) as total FROM [${dbName}].[dbo].[list_size] ${searchCondition}`,
       search && search.trim() !== '' ? { search: params.search } : {}
     );
     const total = countResult.recordset[0].total;
@@ -247,14 +294,14 @@ router.get('/sizes', verifyToken, async (req, res) => {
     // Get data with pagination
     const result = await query(`
       SELECT size_code, size
-      FROM [Backup_hskpro].[dbo].[list_size]
+      FROM [${dbName}].[dbo].[list_size]
       ${searchCondition}
       ORDER BY size_code
       OFFSET @offset ROWS FETCH NEXT @limit ROWS ONLY
     `, params);
-    
+
     console.log(`✅ Found ${result.recordset.length} sizes (Total: ${total})`);
-    
+
     res.json({
       success: true,
       data: result.recordset,
@@ -267,10 +314,10 @@ router.get('/sizes', verifyToken, async (req, res) => {
     });
   } catch (err) {
     console.error('❌ Get sizes error:', err);
-    res.status(500).json({ 
+    res.status(500).json({
       success: false,
       error: 'Failed to fetch sizes',
-      message: err.message 
+      message: err.message
     });
   }
 });
@@ -284,42 +331,42 @@ router.post('/sizes', verifyToken, verifyRole(['IT']), async (req, res) => {
     const { size_code, size } = req.body;
 
     if (!size_code || !size) {
-      return res.status(400).json({ 
+      return res.status(400).json({
         success: false,
-        error: 'Size code and size are required' 
+        error: 'Size code and size are required'
       });
     }
 
     console.log('📝 Creating size:', size_code);
 
     const existing = await query(
-      'SELECT size_code FROM [Backup_hskpro].[dbo].[list_size] WHERE size_code = @code',
+      'SELECT size_code FROM [${dbName}].[dbo].[list_size] WHERE size_code = @code',
       { code: size_code }
     );
 
     if (existing.recordset.length > 0) {
-      return res.status(400).json({ 
+      return res.status(400).json({
         success: false,
-        error: 'Size code already exists' 
+        error: 'Size code already exists'
       });
     }
 
     await query(`
-      INSERT INTO [Backup_hskpro].[dbo].[list_size] (size_code, size)
+      INSERT INTO [${dbName}].[dbo].[list_size] (size_code, size)
       VALUES (@code, @size)
     `, { code: size_code, size });
 
     console.log('✅ Size created:', size_code);
-    res.status(201).json({ 
+    res.status(201).json({
       success: true,
-      message: 'Size created successfully' 
+      message: 'Size created successfully'
     });
   } catch (err) {
     console.error('❌ Create size error:', err);
-    res.status(500).json({ 
+    res.status(500).json({
       success: false,
       error: 'Failed to create size',
-      message: err.message 
+      message: err.message
     });
   }
 });
@@ -334,43 +381,43 @@ router.put('/sizes/:code', verifyToken, verifyRole(['IT']), async (req, res) => 
     const { size } = req.body;
 
     if (!size) {
-      return res.status(400).json({ 
+      return res.status(400).json({
         success: false,
-        error: 'Size is required' 
+        error: 'Size is required'
       });
     }
 
     console.log('📝 Updating size:', code);
 
     const existing = await query(
-      'SELECT size_code FROM [Backup_hskpro].[dbo].[list_size] WHERE size_code = @code',
+      'SELECT size_code FROM [${dbName}].[dbo].[list_size] WHERE size_code = @code',
       { code }
     );
 
     if (existing.recordset.length === 0) {
-      return res.status(404).json({ 
+      return res.status(404).json({
         success: false,
-        error: 'Size not found' 
+        error: 'Size not found'
       });
     }
 
     await query(`
-      UPDATE [Backup_hskpro].[dbo].[list_size]
+      UPDATE [${dbName}].[dbo].[list_size]
       SET size = @size
       WHERE size_code = @code
     `, { code, size });
 
     console.log('✅ Size updated:', code);
-    res.json({ 
+    res.json({
       success: true,
-      message: 'Size updated successfully' 
+      message: 'Size updated successfully'
     });
   } catch (err) {
     console.error('❌ Update size error:', err);
-    res.status(500).json({ 
+    res.status(500).json({
       success: false,
       error: 'Failed to update size',
-      message: err.message 
+      message: err.message
     });
   }
 });
@@ -386,33 +433,78 @@ router.delete('/sizes/:code', verifyToken, verifyRole(['IT']), async (req, res) 
     console.log('🗑️ Deleting size:', code);
 
     const existing = await query(
-      'SELECT size_code FROM [Backup_hskpro].[dbo].[list_size] WHERE size_code = @code',
+      'SELECT size_code FROM [${dbName}].[dbo].[list_size] WHERE size_code = @code',
       { code }
     );
 
     if (existing.recordset.length === 0) {
-      return res.status(404).json({ 
+      return res.status(404).json({
         success: false,
-        error: 'Size not found' 
+        error: 'Size not found'
       });
     }
 
     await query(
-      'DELETE FROM [Backup_hskpro].[dbo].[list_size] WHERE size_code = @code',
+      'DELETE FROM [${dbName}].[dbo].[list_size] WHERE size_code = @code',
       { code }
     );
 
     console.log('✅ Size deleted:', code);
-    res.json({ 
+    res.json({
       success: true,
-      message: 'Size deleted successfully' 
+      message: 'Size deleted successfully'
     });
   } catch (err) {
     console.error('❌ Delete size error:', err);
-    res.status(500).json({ 
+    res.status(500).json({
       success: false,
       error: 'Failed to delete size',
-      message: err.message 
+      message: err.message
+    });
+  }
+});
+
+/**
+ * POST /api/options/sizes/batch-delete
+ * Batch delete sizes (IT only)
+ */
+router.post('/sizes/batch-delete', verifyToken, verifyRole(['IT']), async (req, res) => {
+  try {
+    const { codes } = req.body;
+
+    if (!codes || !Array.isArray(codes) || codes.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'Codes array is required'
+      });
+    }
+
+    console.log('🗑️ Batch deleting sizes:', codes.length);
+
+    const params = {};
+    const placeholders = codes.map((code, i) => {
+      const paramName = `code${i}`;
+      params[paramName] = code;
+      return `@${paramName}`;
+    }).join(',');
+
+    await query(
+      `DELETE FROM [${dbName}].[dbo].[list_size] WHERE size_code IN (${placeholders})`,
+      params
+    );
+
+    console.log(`✅ Batch deleted ${codes.length} sizes`);
+    res.json({
+      success: true,
+      message: `${codes.length} sizes deleted successfully`,
+      count: codes.length
+    });
+  } catch (err) {
+    console.error('❌ Batch delete sizes error:', err);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to batch delete sizes',
+      message: err.message
     });
   }
 });
@@ -423,7 +515,7 @@ router.delete('/sizes/:code', verifyToken, verifyRole(['IT']), async (req, res) 
  * GET /api/options/productions
  * Get all productions with pagination
  */
-router.get('/productions', verifyToken, async (req, res) => {
+router.get('/productions', verifyToken, verifyRole(['IT', 'MANAGEMENT']), async (req, res) => {
   try {
     const { page = 1, limit = 10, search = '' } = req.query;
 
@@ -443,7 +535,7 @@ router.get('/productions', verifyToken, async (req, res) => {
 
     // Get total count
     const countResult = await query(
-      `SELECT COUNT(*) as total FROM [Backup_hskpro].[dbo].[list_production] ${searchCondition}`,
+      `SELECT COUNT(*) as total FROM [${dbName}].[dbo].[list_production] ${searchCondition}`,
       search && search.trim() !== '' ? { search: params.search } : {}
     );
     const total = countResult.recordset[0].total;
@@ -451,14 +543,14 @@ router.get('/productions', verifyToken, async (req, res) => {
     // Get data with pagination
     const result = await query(`
       SELECT production_code, production
-      FROM [Backup_hskpro].[dbo].[list_production]
+      FROM [${dbName}].[dbo].[list_production]
       ${searchCondition}
       ORDER BY production_code
       OFFSET @offset ROWS FETCH NEXT @limit ROWS ONLY
     `, params);
-    
+
     console.log(`✅ Found ${result.recordset.length} productions (Total: ${total})`);
-    
+
     res.json({
       success: true,
       data: result.recordset,
@@ -471,10 +563,10 @@ router.get('/productions', verifyToken, async (req, res) => {
     });
   } catch (err) {
     console.error('❌ Get productions error:', err);
-    res.status(500).json({ 
+    res.status(500).json({
       success: false,
       error: 'Failed to fetch productions',
-      message: err.message 
+      message: err.message
     });
   }
 });
@@ -488,42 +580,42 @@ router.post('/productions', verifyToken, verifyRole(['IT']), async (req, res) =>
     const { production_code, production } = req.body;
 
     if (!production_code || !production) {
-      return res.status(400).json({ 
+      return res.status(400).json({
         success: false,
-        error: 'Production code and production are required' 
+        error: 'Production code and production are required'
       });
     }
 
     console.log('📝 Creating production:', production_code);
 
     const existing = await query(
-      'SELECT production_code FROM [Backup_hskpro].[dbo].[list_production] WHERE production_code = @code',
+      'SELECT production_code FROM [${dbName}].[dbo].[list_production] WHERE production_code = @code',
       { code: production_code }
     );
 
     if (existing.recordset.length > 0) {
-      return res.status(400).json({ 
+      return res.status(400).json({
         success: false,
-        error: 'Production code already exists' 
+        error: 'Production code already exists'
       });
     }
 
     await query(`
-      INSERT INTO [Backup_hskpro].[dbo].[list_production] (production_code, production)
+      INSERT INTO [${dbName}].[dbo].[list_production] (production_code, production)
       VALUES (@code, @production)
     `, { code: production_code, production });
 
     console.log('✅ Production created:', production_code);
-    res.status(201).json({ 
+    res.status(201).json({
       success: true,
-      message: 'Production created successfully' 
+      message: 'Production created successfully'
     });
   } catch (err) {
     console.error('❌ Create production error:', err);
-    res.status(500).json({ 
+    res.status(500).json({
       success: false,
       error: 'Failed to create production',
-      message: err.message 
+      message: err.message
     });
   }
 });
@@ -538,43 +630,43 @@ router.put('/productions/:code', verifyToken, verifyRole(['IT']), async (req, re
     const { production } = req.body;
 
     if (!production) {
-      return res.status(400).json({ 
+      return res.status(400).json({
         success: false,
-        error: 'Production is required' 
+        error: 'Production is required'
       });
     }
 
     console.log('📝 Updating production:', code);
 
     const existing = await query(
-      'SELECT production_code FROM [Backup_hskpro].[dbo].[list_production] WHERE production_code = @code',
+      'SELECT production_code FROM [${dbName}].[dbo].[list_production] WHERE production_code = @code',
       { code }
     );
 
     if (existing.recordset.length === 0) {
-      return res.status(404).json({ 
+      return res.status(404).json({
         success: false,
-        error: 'Production not found' 
+        error: 'Production not found'
       });
     }
 
     await query(`
-      UPDATE [Backup_hskpro].[dbo].[list_production]
+      UPDATE [${dbName}].[dbo].[list_production]
       SET production = @production
       WHERE production_code = @code
     `, { code, production });
 
     console.log('✅ Production updated:', code);
-    res.json({ 
+    res.json({
       success: true,
-      message: 'Production updated successfully' 
+      message: 'Production updated successfully'
     });
   } catch (err) {
     console.error('❌ Update production error:', err);
-    res.status(500).json({ 
+    res.status(500).json({
       success: false,
       error: 'Failed to update production',
-      message: err.message 
+      message: err.message
     });
   }
 });
@@ -590,33 +682,78 @@ router.delete('/productions/:code', verifyToken, verifyRole(['IT']), async (req,
     console.log('🗑️ Deleting production:', code);
 
     const existing = await query(
-      'SELECT production_code FROM [Backup_hskpro].[dbo].[list_production] WHERE production_code = @code',
+      'SELECT production_code FROM [${dbName}].[dbo].[list_production] WHERE production_code = @code',
       { code }
     );
 
     if (existing.recordset.length === 0) {
-      return res.status(404).json({ 
+      return res.status(404).json({
         success: false,
-        error: 'Production not found' 
+        error: 'Production not found'
       });
     }
 
     await query(
-      'DELETE FROM [Backup_hskpro].[dbo].[list_production] WHERE production_code = @code',
+      'DELETE FROM [${dbName}].[dbo].[list_production] WHERE production_code = @code',
       { code }
     );
 
     console.log('✅ Production deleted:', code);
-    res.json({ 
+    res.json({
       success: true,
-      message: 'Production deleted successfully' 
+      message: 'Production deleted successfully'
     });
   } catch (err) {
     console.error('❌ Delete production error:', err);
-    res.status(500).json({ 
+    res.status(500).json({
       success: false,
       error: 'Failed to delete production',
-      message: err.message 
+      message: err.message
+    });
+  }
+});
+
+/**
+ * POST /api/options/productions/batch-delete
+ * Batch delete productions (IT only)
+ */
+router.post('/productions/batch-delete', verifyToken, verifyRole(['IT']), async (req, res) => {
+  try {
+    const { codes } = req.body;
+
+    if (!codes || !Array.isArray(codes) || codes.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'Codes array is required'
+      });
+    }
+
+    console.log('🗑️ Batch deleting productions:', codes.length);
+
+    const params = {};
+    const placeholders = codes.map((code, i) => {
+      const paramName = `code${i}`;
+      params[paramName] = code;
+      return `@${paramName}`;
+    }).join(',');
+
+    await query(
+      `DELETE FROM [${dbName}].[dbo].[list_production] WHERE production_code IN (${placeholders})`,
+      params
+    );
+
+    console.log(`✅ Batch deleted ${codes.length} productions`);
+    res.json({
+      success: true,
+      message: `${codes.length} productions deleted successfully`,
+      count: codes.length
+    });
+  } catch (err) {
+    console.error('❌ Batch delete productions error:', err);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to batch delete productions',
+      message: err.message
     });
   }
 });

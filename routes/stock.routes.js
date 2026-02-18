@@ -1,13 +1,13 @@
 const express = require('express');
 const router = express.Router();
-const { query } = require('../config/database');
-const { verifyToken } = require('../middleware/auth.middleware');
+const { query, dbName } = require('../config/database');
+const { verifyToken, verifyRole } = require('../middleware/auth.middleware');
 
 /**
  * GET /api/stocks
  * Get all stocks - Using master_database JOIN with stok summary
  */
-router.get('/', verifyToken, async (req, res) => {
+router.get('/', verifyToken, verifyRole(['IT', 'MANAGEMENT']), async (req, res) => {
   try {
     const { page = 1, limit = 10, search = '' } = req.query;
 
@@ -35,10 +35,10 @@ router.get('/', verifyToken, async (req, res) => {
     // Count total
     const countQuery = `
       SELECT COUNT(*) as total 
-      FROM [Backup_hskpro].[dbo].[master_database] m
+      FROM [${dbName}].[dbo].[master_database] m
       ${searchCondition}
     `;
-    
+
     const countResult = await query(
       countQuery,
       search && search.trim() !== '' ? { search: params.search } : {}
@@ -61,7 +61,7 @@ router.get('/', verifyToken, async (req, res) => {
           -- Calculate percentage dari max stock
           CAST(
             ISNULL(m.stock, 0) * 100.0 / 
-            NULLIF((SELECT MAX(stock) FROM [Backup_hskpro].[dbo].[master_database]), 0)
+            NULLIF((SELECT MAX(stock) FROM [${dbName}].[dbo].[master_database]), 0)
           AS DECIMAL(5,2)) as [percentage],
           
           -- Status based on stock
@@ -74,14 +74,14 @@ router.get('/', verifyToken, async (req, res) => {
           -- Production status: Check if model has receiving in last month
           CASE
             WHEN EXISTS (
-              SELECT 1 FROM [Backup_hskpro].[dbo].[data_receiving] dr
+              SELECT 1 FROM [${dbName}].[dbo].[data_receiving] dr
               WHERE dr.model = m.model 
               AND dr.date_time >= DATEADD(MONTH, -1, GETDATE())
             ) THEN 'RUN'
             ELSE 'STOP'
           END AS status_production
           
-        FROM [Backup_hskpro].[dbo].[master_database] m
+        FROM [${dbName}].[dbo].[master_database] m
         ${searchCondition}
       )
       SELECT 
@@ -117,9 +117,9 @@ router.get('/', verifyToken, async (req, res) => {
 
   } catch (err) {
     console.error('❌ Get stocks error:', err);
-    res.status(500).json({ 
+    res.status(500).json({
       error: 'Failed to fetch stocks',
-      message: err.message 
+      message: err.message
     });
   }
 });
@@ -128,27 +128,27 @@ router.get('/', verifyToken, async (req, res) => {
  * GET /api/stocks/warehouse-stats
  * Get warehouse statistics
  */
-router.get('/warehouse-stats', verifyToken, async (req, res) => {
+router.get('/warehouse-stats', verifyToken, verifyRole(['IT', 'MANAGEMENT']), async (req, res) => {
   try {
     console.log('📊 Fetching warehouse stats...');
-    
+
     const result = await query(`
       SELECT 
-        ISNULL((SELECT SUM(stock) FROM [Backup_hskpro].[dbo].[master_database]), 0) as first_stock,
-        ISNULL((SELECT COUNT(*) FROM [Backup_hskpro].[dbo].[data_receiving] 
+        ISNULL((SELECT SUM(stock) FROM [${dbName}].[dbo].[master_database]), 0) as first_stock,
+        ISNULL((SELECT COUNT(*) FROM [${dbName}].[dbo].[data_receiving] 
                 WHERE CAST(date_time AS DATE) = CAST(GETDATE() AS DATE)), 0) as receiving,
-        ISNULL((SELECT COUNT(*) FROM [Backup_hskpro].[dbo].[data_shipping] 
+        ISNULL((SELECT COUNT(*) FROM [${dbName}].[dbo].[data_shipping] 
                 WHERE CAST(date_time AS DATE) = CAST(GETDATE() AS DATE)), 0) as shipping,
-        ISNULL((SELECT SUM(stock) FROM [Backup_hskpro].[dbo].[master_database]), 0) as warehouse_stock
+        ISNULL((SELECT SUM(stock) FROM [${dbName}].[dbo].[master_database]), 0) as warehouse_stock
     `);
-    
+
     console.log('✅ Warehouse stats:', result.recordset[0]);
     res.json(result.recordset[0]);
   } catch (err) {
     console.error('❌ Warehouse stats error:', err);
-    res.status(500).json({ 
+    res.status(500).json({
       error: 'Failed to fetch warehouse stats',
-      message: err.message 
+      message: err.message
     });
   }
 });
@@ -157,10 +157,10 @@ router.get('/warehouse-stats', verifyToken, async (req, res) => {
  * GET /api/stocks/chart-data
  * Get chart data for last 7 days
  */
-router.get('/chart-data', verifyToken, async (req, res) => {
+router.get('/chart-data', verifyToken, verifyRole(['IT', 'MANAGEMENT']), async (req, res) => {
   try {
     console.log('📈 Fetching chart data...');
-    
+
     const result = await query(`
       WITH Last7Days AS (
         SELECT CAST(DATEADD(day, -number, GETDATE()) AS DATE) as date
@@ -174,26 +174,26 @@ router.get('/chart-data', verifyToken, async (req, res) => {
       FROM Last7Days d
       LEFT JOIN (
         SELECT CAST(date_time AS DATE) as date, COUNT(*) as receiving
-        FROM [Backup_hskpro].[dbo].[data_receiving]
+        FROM [${dbName}].[dbo].[data_receiving]
         WHERE date_time >= DATEADD(day, -7, CAST(GETDATE() AS DATE))
         GROUP BY CAST(date_time AS DATE)
       ) r ON d.date = r.date
       LEFT JOIN (
         SELECT CAST(date_time AS DATE) as date, COUNT(*) as shipping
-        FROM [Backup_hskpro].[dbo].[data_shipping]
+        FROM [${dbName}].[dbo].[data_shipping]
         WHERE date_time >= DATEADD(day, -7, CAST(GETDATE() AS DATE))
         GROUP BY CAST(date_time AS DATE)
       ) s ON d.date = s.date
       ORDER BY d.date ASC
     `);
-    
+
     console.log('✅ Chart data:', result.recordset.length, 'records');
     res.json(result.recordset);
   } catch (err) {
     console.error('❌ Chart data error:', err);
-    res.status(500).json({ 
+    res.status(500).json({
       error: 'Failed to fetch chart data',
-      message: err.message 
+      message: err.message
     });
   }
 });

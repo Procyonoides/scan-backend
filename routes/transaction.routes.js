@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { query } = require('../config/database');
+const { query, dbName } = require('../config/database');
 const { verifyToken, verifyRole } = require('../middleware/auth.middleware');
 
 /**
@@ -8,7 +8,7 @@ const { verifyToken, verifyRole } = require('../middleware/auth.middleware');
  * Get all transactions with pagination
  * ✅ SESUAI PHP: controller_monitoring.php - transaction()
  */
-router.get('/', verifyToken, async (req, res) => {
+router.get('/', verifyToken, verifyRole(['IT', 'MANAGEMENT']), async (req, res) => {
   try {
     const { page = 1, limit = 10, search = '' } = req.query;
 
@@ -28,7 +28,7 @@ router.get('/', verifyToken, async (req, res) => {
 
     // Get total count
     const countResult = await query(
-      `SELECT COUNT(*) as total FROM [Backup_hskpro].[dbo].[stok] ${searchCondition}`,
+      `SELECT COUNT(*) as total FROM [${dbName}].[dbo].[stok] ${searchCondition}`,
       search && search.trim() !== '' ? { search: params.search } : {}
     );
     const total = countResult.recordset[0].total;
@@ -42,14 +42,14 @@ router.get('/', verifyToken, async (req, res) => {
         shipping,
         stock_akhir,
         CONVERT(VARCHAR, date, 23) as date
-      FROM [Backup_hskpro].[dbo].[stok]
+      FROM [${dbName}].[dbo].[stok]
       ${searchCondition}
       ORDER BY date DESC
       OFFSET @offset ROWS FETCH NEXT @limit ROWS ONLY
     `, params);
-    
+
     console.log(`✅ Found ${result.recordset.length} transactions (Total: ${total})`);
-    
+
     res.json({
       success: true,
       data: result.recordset,
@@ -62,10 +62,10 @@ router.get('/', verifyToken, async (req, res) => {
     });
   } catch (err) {
     console.error('❌ Get transactions error:', err);
-    res.status(500).json({ 
+    res.status(500).json({
       success: false,
       error: 'Failed to fetch transactions',
-      message: err.message 
+      message: err.message
     });
   }
 });
@@ -74,7 +74,7 @@ router.get('/', verifyToken, async (req, res) => {
  * GET /api/transactions/:no
  * Get single transaction detail
  */
-router.get('/:no', verifyToken, async (req, res) => {
+router.get('/:no', verifyToken, verifyRole(['IT', 'MANAGEMENT']), async (req, res) => {
   try {
     const { no } = req.params;
     console.log(`📋 Fetching transaction no: ${no}`);
@@ -87,14 +87,14 @@ router.get('/:no', verifyToken, async (req, res) => {
         shipping,
         stock_akhir,
         CONVERT(VARCHAR, date, 23) as date
-      FROM [Backup_hskpro].[dbo].[stok]
+      FROM [${dbName}].[dbo].[stok]
       WHERE no = @no
     `, { no: parseInt(no) });
 
     if (result.recordset.length === 0) {
-      return res.status(404).json({ 
+      return res.status(404).json({
         success: false,
-        error: 'Transaction not found' 
+        error: 'Transaction not found'
       });
     }
 
@@ -104,10 +104,10 @@ router.get('/:no', verifyToken, async (req, res) => {
     });
   } catch (err) {
     console.error('❌ Get transaction detail error:', err);
-    res.status(500).json({ 
+    res.status(500).json({
       success: false,
       error: 'Failed to fetch transaction',
-      message: err.message 
+      message: err.message
     });
   }
 });
@@ -126,14 +126,14 @@ router.put('/:no', verifyToken, verifyRole(['IT']), async (req, res) => {
 
     // Check if exists
     const existing = await query(
-      'SELECT no FROM [Backup_hskpro].[dbo].[stok] WHERE no = @no',
+      'SELECT no FROM [${dbName}].[dbo].[stok] WHERE no = @no',
       { no: parseInt(no) }
     );
 
     if (existing.recordset.length === 0) {
-      return res.status(404).json({ 
+      return res.status(404).json({
         success: false,
-        error: 'Transaction not found' 
+        error: 'Transaction not found'
       });
     }
 
@@ -159,31 +159,31 @@ router.put('/:no', verifyToken, verifyRole(['IT']), async (req, res) => {
     }
 
     if (updateFields.length === 0) {
-      return res.status(400).json({ 
+      return res.status(400).json({
         success: false,
-        error: 'No fields to update' 
+        error: 'No fields to update'
       });
     }
 
     // Execute update
     await query(`
-      UPDATE [Backup_hskpro].[dbo].[stok]
+      UPDATE [${dbName}].[dbo].[stok]
       SET ${updateFields.join(', ')}
       WHERE no = @no
     `, params);
 
     console.log(`✅ Transaction updated: ${no}`);
 
-    res.json({ 
+    res.json({
       success: true,
-      message: 'Transaction updated successfully' 
+      message: 'Transaction updated successfully'
     });
   } catch (err) {
     console.error('❌ Update transaction error:', err);
-    res.status(500).json({ 
+    res.status(500).json({
       success: false,
       error: 'Failed to update transaction',
-      message: err.message 
+      message: err.message
     });
   }
 });
@@ -201,35 +201,80 @@ router.delete('/:no', verifyToken, verifyRole(['IT']), async (req, res) => {
 
     // Check if exists
     const existing = await query(
-      'SELECT no FROM [Backup_hskpro].[dbo].[stok] WHERE no = @no',
+      'SELECT no FROM [${dbName}].[dbo].[stok] WHERE no = @no',
       { no: parseInt(no) }
     );
 
     if (existing.recordset.length === 0) {
-      return res.status(404).json({ 
+      return res.status(404).json({
         success: false,
-        error: 'Transaction not found' 
+        error: 'Transaction not found'
       });
     }
 
     // Delete
     await query(
-      'DELETE FROM [Backup_hskpro].[dbo].[stok] WHERE no = @no',
+      'DELETE FROM [${dbName}].[dbo].[stok] WHERE no = @no',
       { no: parseInt(no) }
     );
 
     console.log(`✅ Transaction deleted: ${no}`);
 
-    res.json({ 
+    res.json({
       success: true,
-      message: 'Transaction deleted successfully' 
+      message: 'Transaction deleted successfully'
     });
   } catch (err) {
     console.error('❌ Delete transaction error:', err);
-    res.status(500).json({ 
+    res.status(500).json({
       success: false,
       error: 'Failed to delete transaction',
-      message: err.message 
+      message: err.message
+    });
+  }
+});
+
+/**
+ * POST /api/transactions/batch-delete
+ * Batch delete transactions (IT only)
+ */
+router.post('/batch-delete', verifyToken, verifyRole(['IT']), async (req, res) => {
+  try {
+    const { nos } = req.body;
+
+    if (!nos || !Array.isArray(nos) || nos.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'Transaction numbers array is required'
+      });
+    }
+
+    console.log('🗑️ Batch deleting transactions:', nos.length);
+
+    const params = {};
+    const placeholders = nos.map((no, i) => {
+      const paramName = `no${i}`;
+      params[paramName] = no;
+      return `@${paramName}`;
+    }).join(',');
+
+    await query(
+      `DELETE FROM [${dbName}].[dbo].[stok] WHERE no IN (${placeholders})`,
+      params
+    );
+
+    console.log(`✅ Batch deleted ${nos.length} transactions`);
+    res.json({
+      success: true,
+      message: `${nos.length} transactions deleted successfully`,
+      count: nos.length
+    });
+  } catch (err) {
+    console.error('❌ Batch delete transactions error:', err);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to batch delete transactions',
+      message: err.message
     });
   }
 });
@@ -239,7 +284,7 @@ router.delete('/:no', verifyToken, verifyRole(['IT']), async (req, res) => {
  * Export transactions to Excel
  * ✅ SESUAI PHP: controller_monitoring.php - print_transaction()
  */
-router.get('/export/excel', verifyToken, async (req, res) => {
+router.get('/export/excel', verifyToken, verifyRole(['IT', 'MANAGEMENT']), async (req, res) => {
   try {
     console.log('📤 Exporting transactions to Excel...');
 
@@ -251,14 +296,14 @@ router.get('/export/excel', verifyToken, async (req, res) => {
         shipping,
         stock_akhir,
         CONVERT(VARCHAR, date, 23) as date
-      FROM [Backup_hskpro].[dbo].[stok]
+      FROM [${dbName}].[dbo].[stok]
       ORDER BY date ASC
     `);
 
     // Simple CSV export (dapat diganti dengan library Excel seperti exceljs)
     const csv = [
       'NO,DATE/TIME,FIRST STOCK,RECEIVING,SHIPPING,WAREHOUSE STOCK',
-      ...result.recordset.map(row => 
+      ...result.recordset.map(row =>
         `${row.no},${row.date},${row.stock_awal},${row.receiving},${row.shipping},${row.stock_akhir}`
       )
     ].join('\n');
@@ -270,10 +315,10 @@ router.get('/export/excel', verifyToken, async (req, res) => {
     console.log('✅ Excel export completed');
   } catch (err) {
     console.error('❌ Export transactions error:', err);
-    res.status(500).json({ 
+    res.status(500).json({
       success: false,
       error: 'Failed to export transactions',
-      message: err.message 
+      message: err.message
     });
   }
 });

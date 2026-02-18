@@ -46,11 +46,11 @@ async function query(sql, params = {}) {
       throw new Error('Database pool not connected');
     }
     const request = pool.request();
-    
+
     for (const key in params) {
       request.input(key, params[key]);
     }
-    
+
     return await request.query(sql);
   } catch (err) {
     console.error('Query error:', err.message);
@@ -58,4 +58,4 @@ async function query(sql, params = {}) {
   }
 }
 
-module.exports = { connectDB, pool, query };
+module.exports = { connectDB, pool, query, dbName: config.database };
