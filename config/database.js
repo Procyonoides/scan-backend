@@ -2,8 +2,7 @@ require('dotenv').config();
 const sql = require('mssql');
 
 const config = {
-  server: 'localhost',
-  port: 58358,
+  server: process.env.DB_SERVER || 'localhost',
   database: process.env.DB_NAME,
   authentication: {
     type: 'default',
@@ -15,10 +14,18 @@ const config = {
   options: {
     encrypt: false,
     trustServerCertificate: true,
-    connectTimeout: 60000,
+    connectTimeout: 15000,
     requestTimeout: 60000
   }
 };
+
+// Prefer a direct port (fast, no dependency on SQL Server Browser/UDP 1434).
+// Only fall back to instanceName resolution if no port is configured.
+if (process.env.DB_PORT) {
+  config.port = parseInt(process.env.DB_PORT, 10);
+} else if (process.env.DB_INSTANCE) {
+  config.options.instanceName = process.env.DB_INSTANCE;
+}
 
 let pool = null;
 
@@ -31,7 +38,7 @@ async function connectDB() {
       setTimeout(connectDB, 5000);
     });
     await pool.connect();
-    console.log('✅ Connected to SQL Server (Port: 58358)');
+    console.log(`✅ Connected to SQL Server (${config.server}\\${process.env.DB_INSTANCE || 'default'})`);
     return pool;
   } catch (err) {
     console.error('❌ Database connection failed:', err.message);

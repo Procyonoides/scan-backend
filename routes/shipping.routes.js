@@ -18,11 +18,13 @@ router.get('/today', verifyToken, async (req, res) => {
   try {
     const page = req.query.page || 1;
     const limit = req.query.limit || 100;
-    const offset = (page - 1) * limit;
+    const pageNum = Math.max(1, parseInt(page));
+    const limitNum = Math.min(1000, Math.max(1, parseInt(limit)));
+    const offset = (pageNum - 1) * limitNum;
     const countResult = await query(`SELECT COUNT(*) as total FROM [${dbName}].[dbo].[shipping] WHERE CAST(date_time AS DATE) = CAST(GETDATE() AS DATE)`);
     const total = countResult.recordset[0].total;
-    const result = await query(`SELECT CONVERT(varchar, date_time, 120) as date_time, original_barcode, model, color, size, quantity, username, scan_no FROM [${dbName}].[dbo].[shipping] WHERE CAST(date_time AS DATE) = CAST(GETDATE() AS DATE) ORDER BY date_time DESC OFFSET @offset ROWS FETCH NEXT @limit ROWS ONLY`, { offset, limit });
-    res.json({ success: true, data: result.recordset, pagination: { total, page, limit } });
+    const result = await query(`SELECT CONVERT(varchar, date_time, 120) as date_time, original_barcode, model, color, size, quantity, username, scan_no FROM [${dbName}].[dbo].[shipping] WHERE CAST(date_time AS DATE) = CAST(GETDATE() AS DATE) ORDER BY date_time DESC OFFSET @offset ROWS FETCH NEXT @limit ROWS ONLY`, { offset, limit: limitNum });
+    res.json({ success: true, data: result.recordset, pagination: { total, page: pageNum, limit: limitNum } });
   } catch (err) {
     res.status(500).json({ success: false, error: 'Failed to fetch today shipping', message: err.message });
   }
@@ -41,7 +43,7 @@ router.post('/scan', verifyToken, async (req, res) => {
     const masterData = await query(`SELECT original_barcode, brand, color, size, four_digit, unit, quantity, production, model, model_code, item FROM [${dbName}].[dbo].[master_database] WHERE original_barcode = @barcode`, { barcode: barcode.trim() });
     if (masterData.recordset.length === 0) return res.status(404).json({ success: false, message: 'Barcode not found' });
     const data = masterData.recordset[0];
-    const userData = await query('SELECT description FROM [${dbName}].[dbo].[users] WHERE username = @username', { username });
+    const userData = await query(`SELECT description FROM [${dbName}].[dbo].[users] WHERE username = @username`, { username });
     const description = userData.recordset[0]?.description || '';
     const today = new Date().toISOString().slice(0, 10);
     const scanNoResult = await query(`SELECT ISNULL(MAX(scan_no), 0) as max_scan_no FROM [${dbName}].[dbo].[shipping] WHERE CAST(date_time AS DATE) = @today`, { today });
@@ -67,7 +69,7 @@ router.post('/batch-scan', verifyToken, async (req, res) => {
     const data = masterData.recordset[0];
     const totalQuantity = data.quantity * batchCount;
     if (data.stock < totalQuantity) return res.status(400).json({ success: false, message: 'Insufficient stock' });
-    const userData = await query('SELECT description FROM [${dbName}].[dbo].[users] WHERE username = @username', { username });
+    const userData = await query(`SELECT description FROM [${dbName}].[dbo].[users] WHERE username = @username`, { username });
     const description = userData.recordset[0]?.description || '';
     const today = new Date().toISOString().slice(0, 10);
     const scanNoResult = await query(`SELECT ISNULL(MAX(scan_no), 0) as max_scan_no FROM [${dbName}].[dbo].[shipping] WHERE CAST(date_time AS DATE) = @today`, { today });

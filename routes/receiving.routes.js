@@ -58,7 +58,7 @@ router.post('/scan', verifyToken, async (req, res) => {
     const masterData = await query(`SELECT original_barcode, brand, color, size, four_digit, unit, quantity, production, model, model_code, item FROM [${dbName}].[dbo].[master_database] WHERE original_barcode = @barcode`, { barcode: barcode.trim() });
     if (masterData.recordset.length === 0) return res.status(404).json({ success: false, message: 'Barcode tidak ditemukan' });
     const data = masterData.recordset[0];
-    const userData = await query('SELECT description FROM [${dbName}].[dbo].[users] WHERE username = @username', { username });
+    const userData = await query(`SELECT description FROM [${dbName}].[dbo].[users] WHERE username = @username`, { username });
     const description = userData.recordset[0]?.description || '';
     const today = new Date().toISOString().slice(0, 10);
     const scanNoResult = await query(`SELECT ISNULL(MAX(scan_no), 0) as max_scan_no FROM [${dbName}].[dbo].[receiving] WHERE CAST(date_time AS DATE) = @today`, { today });
@@ -87,7 +87,7 @@ router.post('/batch-scan', verifyToken, async (req, res) => {
     const masterData = await query(`SELECT original_barcode, brand, color, size, four_digit, unit, quantity, production, model, model_code, item FROM [${dbName}].[dbo].[master_database] WHERE original_barcode = @barcode`, { barcode: barcode.trim() });
     if (masterData.recordset.length === 0) return res.status(404).json({ success: false, error: 'BARCODE_NOT_FOUND', message: 'Data Gagal Diinputkan - Barcode tidak ditemukan di master database' });
     const data = masterData.recordset[0];
-    const userData = await query('SELECT description FROM [${dbName}].[dbo].[users] WHERE username = @username', { username });
+    const userData = await query(`SELECT description FROM [${dbName}].[dbo].[users] WHERE username = @username`, { username });
     const description = userData.recordset[0]?.description || '';
     const today = new Date().toISOString().slice(0, 10);
     const scanNoResult = await query(`SELECT ISNULL(MAX(scan_no), 0) as max_scan_no FROM [${dbName}].[dbo].[receiving] WHERE CAST(date_time AS DATE) = @today`, { today });
@@ -147,20 +147,24 @@ router.post('/batch-delete', verifyToken, verifyRole(['IT']), async (req, res) =
     const { ids } = req.body;
     if (!ids || !Array.isArray(ids) || ids.length === 0) return res.status(400).json({ success: false, error: 'Invalid input' });
     let successCount = 0;
+    const failed = [];
     for (const id of ids) {
       try {
         const parts = id.split('|');
-        if (parts.length !== 3) continue;
+        if (parts.length !== 3) { failed.push({ id, reason: 'Invalid id format' }); continue; }
         const [date_time, scan_no, original_username] = parts;
         const scanData = await query(`SELECT original_barcode, quantity FROM [${dbName}].[dbo].[receiving] WHERE date_time=@date_time AND scan_no=@scan_no AND username=@original_username`, { date_time, scan_no: parseInt(scan_no), original_username });
-        if (scanData.recordset.length === 0) continue;
+        if (scanData.recordset.length === 0) { failed.push({ id, reason: 'Scan not found' }); continue; }
         const { original_barcode, quantity } = scanData.recordset[0];
         await query(`UPDATE [${dbName}].[dbo].[master_database] SET stock=stock-@quantity WHERE original_barcode=@barcode`, { quantity, barcode: original_barcode });
         await query(`DELETE FROM [${dbName}].[dbo].[receiving] WHERE date_time=@date_time AND scan_no=@scan_no AND username=@original_username`, { date_time, scan_no: parseInt(scan_no), original_username });
         successCount++;
-      } catch (err) { }
+      } catch (err) {
+        console.error(`❌ Batch delete failed for id ${id}:`, err.message);
+        failed.push({ id, reason: err.message });
+      }
     }
-    res.json({ success: true, message: `Batch delete completed: ${successCount} scans deleted` });
+    res.json({ success: true, message: `Batch delete completed: ${successCount} scans deleted`, failedCount: failed.length, failed });
   } catch (err) {
     res.status(500).json({ success: false, error: 'Failed to batch delete', message: err.message });
   }
@@ -173,9 +177,13 @@ router.get('/all', verifyToken, verifyRole(['IT']), async (req, res) => {
     const offset = (page - 1) * limit;
     const username_filter = req.query.username || '';
     let whereClause = 'WHERE CAST(date_time AS DATE) = CAST(GETDATE() AS DATE)';
-    if (username_filter) whereClause += ` AND username = '${username_filter}'`;
-    const result = await query(`SELECT *, CONVERT(varchar, date_time, 120) as date_time FROM [${dbName}].[dbo].[receiving] ${whereClause} ORDER BY date_time DESC OFFSET @offset ROWS FETCH NEXT @limit ROWS ONLY`, { offset, limit });
-    const totalResult = await query(`SELECT COUNT(*) as total FROM [${dbName}].[dbo].[receiving] ${whereClause}`);
+    const listParams = { offset, limit };
+    if (username_filter) {
+      whereClause += ` AND username = @username_filter`;
+      listParams.username_filter = username_filter;
+    }
+    const result = await query(`SELECT *, CONVERT(varchar, date_time, 120) as date_time FROM [${dbName}].[dbo].[receiving] ${whereClause} ORDER BY date_time DESC OFFSET @offset ROWS FETCH NEXT @limit ROWS ONLY`, listParams);
+    const totalResult = await query(`SELECT COUNT(*) as total FROM [${dbName}].[dbo].[receiving] ${whereClause}`, username_filter ? { username_filter } : {});
     const total = totalResult.recordset[0].total;
     res.json({ success: true, data: result.recordset, pagination: { total, page, limit, totalPages: Math.ceil(total / limit) } });
   } catch (err) {

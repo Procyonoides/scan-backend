@@ -55,6 +55,14 @@ const verifyRole = (roles) => {
       userPosition: req.user?.position
     });
 
+    if (!req.user) {
+      console.error('❌ Role check ran before authentication (req.user missing)');
+      return res.status(401).json({
+        success: false,
+        error: 'Not authenticated'
+      });
+    }
+
     if (!roles.includes(req.user.position)) {
       console.error('❌ Insufficient permissions');
       return res.status(403).json({ 
