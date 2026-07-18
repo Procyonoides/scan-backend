@@ -98,7 +98,7 @@ async function startServer() {
     // Connect to database
     await connectDB();
     
-    app.listen(PORT, () => {
+    server.listen(PORT, () => {
       console.log(`\n✅ Server running on http://localhost:${PORT}`);
       console.log(`📝 API URL: http://localhost:${PORT}/api`);
       console.log(`🔌 Socket.IO ready`);

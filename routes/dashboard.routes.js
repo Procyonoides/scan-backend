@@ -159,30 +159,30 @@ router.get('/shift-scan', verifyToken, verifyRole(['IT', 'MANAGEMENT']), async (
 
     // CRITICAL: PHP pakai date_time > '$yesterday' (greater than, bukan equal)
     // Artinya: data SETELAH kemarin 07:30:00 sampai sekarang
+    // NOTE: digabung dari [receiving] (data live, belum di-"Move Data") DAN
+    // [data_receiving] (arsip) supaya scan hari ini yang belum di-move tetap kehitung.
     const result = await query(`
+      WITH combined AS (
+        SELECT username, quantity, description, production FROM [${dbName}].[dbo].[receiving] WHERE date_time > @yesterday
+        UNION ALL
+        SELECT username, quantity, description, production FROM [${dbName}].[dbo].[data_receiving] WHERE date_time > @yesterday
+      )
       SELECT 
         username,
         CAST(SUM(quantity) * 100.0 / NULLIF((
-          SELECT SUM(quantity) 
-          FROM [${dbName}].[dbo].[data_receiving] 
-          WHERE date_time > @yesterday
-          AND description = 'INCOME' 
-          AND production = 'PT HSK REMBANG'
+          SELECT SUM(quantity) FROM combined
+          WHERE description = 'INCOME' AND production = 'PT HSK REMBANG'
         ), 0) AS DECIMAL(10, 0)) AS status,
         REPLACE(
           CAST(SUM(quantity) * 100.0 / NULLIF((
-            SELECT SUM(quantity) 
-            FROM [${dbName}].[dbo].[data_receiving] 
-            WHERE date_time > @yesterday
-            AND description = 'INCOME' 
-            AND production = 'PT HSK REMBANG'
+            SELECT SUM(quantity) FROM combined
+            WHERE description = 'INCOME' AND production = 'PT HSK REMBANG'
           ), 0) AS DECIMAL(10, 2)), 
           '.', ','
         ) AS [percent],
         SUM(quantity) AS total
-      FROM [${dbName}].[dbo].[data_receiving]
-      WHERE date_time > @yesterday
-      AND description = 'INCOME' 
+      FROM combined
+      WHERE description = 'INCOME' 
       AND production = 'PT HSK REMBANG'
       GROUP BY username
       ORDER BY username

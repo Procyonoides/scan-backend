@@ -66,7 +66,7 @@ router.post('/scan', verifyToken, async (req, res) => {
     await query(`UPDATE [${dbName}].[dbo].[master_database] SET stock = stock + @quantity WHERE original_barcode = @barcode`, { quantity: data.quantity, barcode: barcode.trim() });
     await query(`INSERT INTO [${dbName}].[dbo].[receiving] (original_barcode, brand, color, size, four_digit, unit, quantity, production, model, model_code, item, date_time, scan_no, username, description) VALUES (@original_barcode, @brand, @color, @size, @four_digit, @unit, @quantity, @production, @model, @model_code, @item, GETDATE(), @scan_no, @username, @description)`, { ...data, scan_no, username, description });
     const io = req.app.get('io');
-    if (io) io.emit('dashboard:update', { type: 'RECEIVING', ...data, username, scan_no, timestamp: new Date().toISOString() });
+    if (io) io.emit('dashboard:update', { type: 'RECEIVING', ...data, barcode: data.original_barcode, username, scan_no, timestamp: new Date().toISOString() });
     res.status(201).json({ success: true, message: 'Data Berhasil Diinputkan', data: { scan_no, original_barcode: data.original_barcode, model: data.model, color: data.color, size: data.size, quantity: data.quantity, date_time: new Date().toISOString(), username } });
   } catch (err) {
     res.status(500).json({ success: false, message: 'Gagal melakukan scan', details: err.message });
