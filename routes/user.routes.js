@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const { query } = require('../config/database');
 const { verifyToken, verifyRole } = require('../middleware/auth.middleware');
+const { verifyLogin, cacheNewPassword } = require('../utils/password');
 
 /**
  * GET /api/users
@@ -113,16 +114,19 @@ router.post('/', verifyToken, verifyRole(['IT']), async (req, res) => {
       return res.status(400).json({ error: 'Username already exists' });
     }
 
-    // Insert user with plain text password (as per current system)
+    // Insert user with plain text password - dbo.users is shared with the
+    // central system and must stay untouched/plain text. We still cache
+    // a local hash so this app's own login can use it right away.
     await query(`
       INSERT INTO dbo.users (username, password, position, description)
       VALUES (@username, @password, @position, @description)
     `, { 
       username,
-      password, // Plain text password
+      password,
       position,
       description: description || ''
     });
+    await cacheNewPassword(username, password);
 
     console.log('✅ User created successfully:', username);
 
@@ -188,6 +192,7 @@ router.put('/:id', verifyToken, verifyRole(['IT']), async (req, res) => {
     }
 
     // CRITICAL: Check password explicitly
+    let passwordToCache = null;
     if (password !== undefined && password !== null && password !== '') {
       const passwordStr = String(password).trim();
       if (passwordStr.length > 0) {
@@ -195,7 +200,8 @@ router.put('/:id', verifyToken, verifyRole(['IT']), async (req, res) => {
           return res.status(400).json({ error: 'Password must be at least 3 characters' });
         }
         updateFields.push('password = @password');
-        params.password = passwordStr;
+        params.password = passwordStr; // plain text - dbo.users is shared with the central system
+        passwordToCache = passwordStr;
         console.log(`🔐 Password will be updated (length: ${passwordStr.length})`);
       }
     }
@@ -214,6 +220,10 @@ router.put('/:id', verifyToken, verifyRole(['IT']), async (req, res) => {
     `, params);
 
     console.log(`✅ Update executed. Rows affected: ${result.rowsAffected}`);
+
+    if (passwordToCache) {
+      await cacheNewPassword(existingUser.recordset[0].username, passwordToCache);
+    }
 
     res.json({ 
       success: true,
@@ -310,7 +320,7 @@ router.put('/:id/password', verifyToken, async (req, res) => {
 
     // Get current password
     const userResult = await query(
-      'SELECT password FROM dbo.users WHERE id_user = @id_user',
+      'SELECT username, password FROM dbo.users WHERE id_user = @id_user',
       { id_user: userId }
     );
 
@@ -318,18 +328,23 @@ router.put('/:id/password', verifyToken, async (req, res) => {
       return res.status(404).json({ error: 'User not found' });
     }
 
+    const targetUsername = userResult.recordset[0].username;
+
     // If user is changing their own password, verify current password
     if (req.user.id_user === userId) {
-      if (current_password !== userResult.recordset[0].password) {
+      const currentMatches = await verifyLogin(targetUsername, current_password, userResult.recordset[0].password);
+      if (!currentMatches) {
         return res.status(401).json({ error: 'Current password is incorrect' });
       }
     }
 
-    // Update password (plain text as per current system)
+    // Update password - plain text to the shared database (as always),
+    // plus refresh our own local hash cache for fast/safe verification.
     await query(
       'UPDATE dbo.users SET password = @password WHERE id_user = @id_user',
       { password: new_password, id_user: userId }
     );
+    await cacheNewPassword(targetUsername, new_password);
 
     console.log(`✅ Password updated successfully for user ID: ${id}`);
 

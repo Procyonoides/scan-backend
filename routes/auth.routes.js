@@ -4,6 +4,7 @@ const jwt = require('jsonwebtoken');
 const { query } = require('../config/database');
 const { verifyToken, verifyRole } = require('../middleware/auth.middleware');
 const { writeLog, readLogs } = require('../utils/actAsLogger');
+const { verifyLogin } = require('../utils/password');
 
 /**
  * Role-based permissions mapping
@@ -17,7 +18,9 @@ const rolePermissions = {
 
 /**
  * POST /api/auth/login
- * Login endpoint dengan plain text password
+ * Login endpoint. Database stays plain-text (shared with the central
+ * system, never modified here) - a local file-based hash cache is used
+ * for faster/safer verification on this app's side. See utils/password.js.
  */
 router.post('/login', async (req, res) => {
   try {
@@ -54,8 +57,11 @@ router.post('/login', async (req, res) => {
 
     console.log(`✅ User found: ${user.username}, Position: ${user.position}`);
 
-    // Verify password - Plain text comparison
-    if (password !== user.password) {
+    // Verify password - checks local hash cache first, falls back to the
+    // database's plain-text value (never modifies the database itself,
+    // since it's shared with the central/pusat system).
+    const passwordMatches = await verifyLogin(username, password, user.password);
+    if (!passwordMatches) {
       console.log(`❌ Password mismatch for user: ${username}`);
       return res.status(401).json({ 
         success: false,
