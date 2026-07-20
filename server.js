@@ -49,6 +49,24 @@ app.use(cors({
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+// ============ ACT-AS AUDIT LOGGING ============
+// Runs before routes' own verifyToken, so it does a lightweight best-effort
+// decode here just to know whether this request is an Act-as session -
+// it never rejects the request itself, that's still each route's job.
+const jwt = require('jsonwebtoken');
+const { auditActAs } = require('./utils/actAsLogger');
+app.use((req, res, next) => {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader?.split(' ')[1];
+  if (token) {
+    try {
+      req.user = jwt.verify(token, process.env.JWT_SECRET);
+    } catch (e) { /* invalid/expired token - let the route's own verifyToken handle rejection */ }
+  }
+  next();
+});
+app.use(auditActAs);
+
 // Health check endpoint
 app.get('/api/health', (req, res) => {
   res.json({ 
@@ -97,6 +115,9 @@ async function startServer() {
   try {
     // Connect to database
     await connectDB();
+
+    // Clean up act-as log files older than the retention window
+    require('./utils/actAsLogger').pruneOldLogs();
     
     server.listen(PORT, () => {
       console.log(`\n✅ Server running on http://localhost:${PORT}`);
