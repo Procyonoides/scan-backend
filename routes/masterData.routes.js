@@ -159,7 +159,7 @@ router.post('/barcode', verifyToken, verifyRole(['IT']), async (req, res) => {
 
     // Check if barcode already exists
     const existingBarcode = await query(
-      'SELECT original_barcode FROM [${dbName}].[dbo].[master_database] WHERE original_barcode = @barcode',
+      `SELECT original_barcode FROM [${dbName}].[dbo].[master_database] WHERE original_barcode = @barcode`,
       { barcode: original_barcode }
     );
 
@@ -232,7 +232,7 @@ router.put('/barcode/:barcode', verifyToken, verifyRole(['IT']), async (req, res
 
     // Check if barcode exists
     const existing = await query(
-      'SELECT original_barcode FROM [${dbName}].[dbo].[master_database] WHERE original_barcode = @barcode',
+      `SELECT original_barcode FROM [${dbName}].[dbo].[master_database] WHERE original_barcode = @barcode`,
       { barcode }
     );
 
@@ -333,7 +333,7 @@ router.delete('/barcode/:barcode', verifyToken, verifyRole(['IT']), async (req, 
 
     // Check if barcode exists
     const existing = await query(
-      'SELECT original_barcode FROM [${dbName}].[dbo].[master_database] WHERE original_barcode = @barcode',
+      `SELECT original_barcode FROM [${dbName}].[dbo].[master_database] WHERE original_barcode = @barcode`,
       { barcode }
     );
 
@@ -346,7 +346,7 @@ router.delete('/barcode/:barcode', verifyToken, verifyRole(['IT']), async (req, 
 
     // Delete barcode
     await query(
-      'DELETE FROM [${dbName}].[dbo].[master_database] WHERE original_barcode = @barcode',
+      `DELETE FROM [${dbName}].[dbo].[master_database] WHERE original_barcode = @barcode`,
       { barcode }
     );
 
@@ -401,7 +401,7 @@ router.post('/batch-delete', verifyToken, verifyRole(['IT']), async (req, res) =
       try {
         // Check if barcode exists
         const existing = await query(
-          'SELECT original_barcode FROM [${dbName}].[dbo].[master_database] WHERE original_barcode = @barcode',
+          `SELECT original_barcode FROM [${dbName}].[dbo].[master_database] WHERE original_barcode = @barcode`,
           { barcode: barcode.trim() }
         );
 
@@ -413,7 +413,7 @@ router.post('/batch-delete', verifyToken, verifyRole(['IT']), async (req, res) =
 
         // Delete barcode
         await query(
-          'DELETE FROM [${dbName}].[dbo].[master_database] WHERE original_barcode = @barcode',
+          `DELETE FROM [${dbName}].[dbo].[master_database] WHERE original_barcode = @barcode`,
           { barcode: barcode.trim() }
         );
 
@@ -1042,28 +1042,25 @@ router.post('/duplicate', verifyToken, verifyRole(['IT']), async (req, res) => {
 
     console.log(`🧹 Deduplicating ${type} records between ${startRange} and ${endRange}`);
 
-    // Deduplication without 'no' column using a temp table approach
-    // This is safer when there is no unique ID
-
-    await query(`
-      SELECT DISTINCT * INTO #temp_duplicate 
-      FROM [${dbName}].[dbo].[${tableName}] 
-      WHERE date_time BETWEEN @startRange AND @endRange
+    // Single atomic statement - no temp table, no risk of the delete
+    // and re-insert landing on different pooled connections (which was
+    // the old approach's danger: the delete could succeed while the
+    // re-insert from a #temp table silently failed on a different
+    // connection, permanently losing the data).
+    const result = await query(`
+      WITH cte AS (
+        SELECT *, ROW_NUMBER() OVER (
+          PARTITION BY original_barcode, brand, color, size, four_digit, unit, quantity,
+                       production, model, model_code, item, date_time, scan_no, username, description
+          ORDER BY (SELECT NULL)
+        ) AS rn
+        FROM [${dbName}].[dbo].[${tableName}]
+        WHERE date_time BETWEEN @startRange AND @endRange
+      )
+      DELETE FROM cte WHERE rn > 1
     `, { startRange, endRange });
 
-    await query(`
-      DELETE FROM [${dbName}].[dbo].[${tableName}] 
-      WHERE date_time BETWEEN @startRange AND @endRange
-    `, { startRange, endRange });
-
-    await query(`
-      INSERT INTO [${dbName}].[dbo].[${tableName}] 
-      SELECT * FROM #temp_duplicate
-    `);
-
-    await query(`DROP TABLE #temp_duplicate`);
-
-    res.json({ success: true, message: 'Deduplication complete' });
+    res.json({ success: true, message: `Deduplication complete. Removed ${result.rowsAffected[0]} duplicate row(s).` });
 
   } catch (err) {
     console.error('Duplicate error:', err);
