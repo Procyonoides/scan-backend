@@ -84,7 +84,7 @@ router.post('/models', verifyToken, verifyRole(['IT']), async (req, res) => {
 
     // Check if model_code exists
     const existing = await query(
-      'SELECT model_code FROM [${dbName}].[dbo].[list_model] WHERE model_code = @code',
+      `SELECT model_code FROM [${dbName}].[dbo].[list_model] WHERE model_code = @code`,
       { code: model_code }
     );
 
@@ -136,7 +136,7 @@ router.put('/models/:code', verifyToken, verifyRole(['IT']), async (req, res) =>
 
     // Check if exists
     const existing = await query(
-      'SELECT model_code FROM [${dbName}].[dbo].[list_model] WHERE model_code = @code',
+      `SELECT model_code FROM [${dbName}].[dbo].[list_model] WHERE model_code = @code`,
       { code }
     );
 
@@ -181,7 +181,7 @@ router.delete('/models/:code', verifyToken, verifyRole(['IT']), async (req, res)
 
     // Check if exists
     const existing = await query(
-      'SELECT model_code FROM [${dbName}].[dbo].[list_model] WHERE model_code = @code',
+      `SELECT model_code FROM [${dbName}].[dbo].[list_model] WHERE model_code = @code`,
       { code }
     );
 
@@ -194,7 +194,7 @@ router.delete('/models/:code', verifyToken, verifyRole(['IT']), async (req, res)
 
     // Delete
     await query(
-      'DELETE FROM [${dbName}].[dbo].[list_model] WHERE model_code = @code',
+      `DELETE FROM [${dbName}].[dbo].[list_model] WHERE model_code = @code`,
       { code }
     );
 
@@ -340,7 +340,7 @@ router.post('/sizes', verifyToken, verifyRole(['IT']), async (req, res) => {
     console.log('📝 Creating size:', size_code);
 
     const existing = await query(
-      'SELECT size_code FROM [${dbName}].[dbo].[list_size] WHERE size_code = @code',
+      `SELECT size_code FROM [${dbName}].[dbo].[list_size] WHERE size_code = @code`,
       { code: size_code }
     );
 
@@ -390,7 +390,7 @@ router.put('/sizes/:code', verifyToken, verifyRole(['IT']), async (req, res) => 
     console.log('📝 Updating size:', code);
 
     const existing = await query(
-      'SELECT size_code FROM [${dbName}].[dbo].[list_size] WHERE size_code = @code',
+      `SELECT size_code FROM [${dbName}].[dbo].[list_size] WHERE size_code = @code`,
       { code }
     );
 
@@ -433,7 +433,7 @@ router.delete('/sizes/:code', verifyToken, verifyRole(['IT']), async (req, res) 
     console.log('🗑️ Deleting size:', code);
 
     const existing = await query(
-      'SELECT size_code FROM [${dbName}].[dbo].[list_size] WHERE size_code = @code',
+      `SELECT size_code FROM [${dbName}].[dbo].[list_size] WHERE size_code = @code`,
       { code }
     );
 
@@ -445,7 +445,7 @@ router.delete('/sizes/:code', verifyToken, verifyRole(['IT']), async (req, res) 
     }
 
     await query(
-      'DELETE FROM [${dbName}].[dbo].[list_size] WHERE size_code = @code',
+      `DELETE FROM [${dbName}].[dbo].[list_size] WHERE size_code = @code`,
       { code }
     );
 
@@ -589,7 +589,7 @@ router.post('/productions', verifyToken, verifyRole(['IT']), async (req, res) =>
     console.log('📝 Creating production:', production_code);
 
     const existing = await query(
-      'SELECT production_code FROM [${dbName}].[dbo].[list_production] WHERE production_code = @code',
+      `SELECT production_code FROM [${dbName}].[dbo].[list_production] WHERE production_code = @code`,
       { code: production_code }
     );
 
@@ -639,7 +639,7 @@ router.put('/productions/:code', verifyToken, verifyRole(['IT']), async (req, re
     console.log('📝 Updating production:', code);
 
     const existing = await query(
-      'SELECT production_code FROM [${dbName}].[dbo].[list_production] WHERE production_code = @code',
+      `SELECT production_code FROM [${dbName}].[dbo].[list_production] WHERE production_code = @code`,
       { code }
     );
 
@@ -682,7 +682,7 @@ router.delete('/productions/:code', verifyToken, verifyRole(['IT']), async (req,
     console.log('🗑️ Deleting production:', code);
 
     const existing = await query(
-      'SELECT production_code FROM [${dbName}].[dbo].[list_production] WHERE production_code = @code',
+      `SELECT production_code FROM [${dbName}].[dbo].[list_production] WHERE production_code = @code`,
       { code }
     );
 
@@ -694,7 +694,7 @@ router.delete('/productions/:code', verifyToken, verifyRole(['IT']), async (req,
     }
 
     await query(
-      'DELETE FROM [${dbName}].[dbo].[list_production] WHERE production_code = @code',
+      `DELETE FROM [${dbName}].[dbo].[list_production] WHERE production_code = @code`,
       { code }
     );
 

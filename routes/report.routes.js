@@ -26,6 +26,7 @@ router.get('/daily', verifyToken, verifyRole(['IT', 'MANAGEMENT']), async (req, 
     }
 
     const tableName = tipe === 'receiving' ? 'data_receiving' : 'data_shipping';
+    const liveTableName = tipe === 'receiving' ? 'receiving' : 'shipping';
     let conditions = [];
     let params = {};
 
@@ -70,7 +71,7 @@ router.get('/daily', verifyToken, verifyRole(['IT', 'MANAGEMENT']), async (req, 
         username,
         description,
         scan_no
-      FROM [${dbName}].[dbo].[${tableName}]
+      FROM (SELECT * FROM [${dbName}].[dbo].[${tableName}] UNION ALL SELECT * FROM [${dbName}].[dbo].[${liveTableName}]) AS combined_t
       ${whereClause}
       ORDER BY date_time DESC
     `, params);
@@ -96,6 +97,7 @@ router.get('/monthly', verifyToken, verifyRole(['IT', 'MANAGEMENT']), async (req
     }
 
     const tableName = tipe === 'receiving' ? 'data_receiving' : 'data_shipping';
+    const liveTableName = tipe === 'receiving' ? 'receiving' : 'shipping';
     let conditions = ["description IN ('INCOME', 'SAMPLE')"];
     let params = {};
 
@@ -133,7 +135,7 @@ router.get('/monthly', verifyToken, verifyRole(['IT', 'MANAGEMENT']), async (req
         size,
         description,
         SUM(quantity) as total
-      FROM [${dbName}].[dbo].[${tableName}]
+      FROM (SELECT * FROM [${dbName}].[dbo].[${tableName}] UNION ALL SELECT * FROM [${dbName}].[dbo].[${liveTableName}]) AS combined_t
       ${whereClause}
       GROUP BY production, brand, model, color, size, description
       ORDER BY model, color, size
@@ -179,6 +181,7 @@ router.get('/daily/export', verifyToken, verifyRole(['IT', 'MANAGEMENT']), async
     if (!tipe) return res.status(400).json({ success: false, error: 'Type required' });
 
     const tableName = tipe === 'receiving' ? 'data_receiving' : 'data_shipping';
+    const liveTableName = tipe === 'receiving' ? 'receiving' : 'shipping';
     let conditions = [];
     let params = {};
     if (tanggal1 && tanggal2) {
@@ -203,7 +206,7 @@ router.get('/daily/export', verifyToken, verifyRole(['IT', 'MANAGEMENT']), async
         quantity as [QUANTITY],
         username as [USERNAME],
         description as [DESCRIPTION]
-      FROM [${dbName}].[dbo].[${tableName}]
+      FROM (SELECT * FROM [${dbName}].[dbo].[${tableName}] UNION ALL SELECT * FROM [${dbName}].[dbo].[${liveTableName}]) AS combined_t
       ${whereClause}
       ORDER BY date_time DESC
     `, params);
@@ -254,6 +257,7 @@ router.get('/monthly/export', verifyToken, verifyRole(['IT', 'MANAGEMENT']), asy
     if (!tipe) return res.status(400).json({ success: false, error: 'Type required' });
 
     const tableName = tipe === 'receiving' ? 'data_receiving' : 'data_shipping';
+    const liveTableName = tipe === 'receiving' ? 'receiving' : 'shipping';
     let conditions = ["description IN ('INCOME', 'SAMPLE')"];
     let params = {};
     if (tanggal1 && tanggal2) {
@@ -272,7 +276,7 @@ router.get('/monthly/export', verifyToken, verifyRole(['IT', 'MANAGEMENT']), asy
         size as [SIZE],
         description as [DESCRIPTION],
         SUM(quantity) as [TOTAL]
-      FROM [${dbName}].[dbo].[${tableName}]
+      FROM (SELECT * FROM [${dbName}].[dbo].[${tableName}] UNION ALL SELECT * FROM [${dbName}].[dbo].[${liveTableName}]) AS combined_t
       ${whereClause}
       GROUP BY production, brand, model, color, size, description
       ORDER BY model, color, size
@@ -325,6 +329,7 @@ router.get('/summary/export', verifyToken, verifyRole(['IT', 'MANAGEMENT']), asy
     if (!tipe) return res.status(400).json({ success: false, error: 'Type required' });
 
     const tableName = tipe === 'receiving' ? 'data_receiving' : 'data_shipping';
+    const liveTableName = tipe === 'receiving' ? 'receiving' : 'shipping';
     let params = {};
     let whereClause = '';
 
@@ -341,10 +346,10 @@ router.get('/summary/export', verifyToken, verifyRole(['IT', 'MANAGEMENT']), asy
 
     const sql = `
       SELECT 'X' AS model, 'X' AS color, 'GRAND TOTAL' AS description, ${pivotSelect}, SUM(quantity) AS TOTAL 
-      FROM [${dbName}].[dbo].[${tableName}] ${whereClause}
+      FROM (SELECT * FROM [${dbName}].[dbo].[${tableName}] UNION ALL SELECT * FROM [${dbName}].[dbo].[${liveTableName}]) AS combined_t ${whereClause}
       UNION ALL
       SELECT model, color, description, ${pivotSelect}, SUM(quantity) AS TOTAL 
-      FROM [${dbName}].[dbo].[${tableName}] ${whereClause}
+      FROM (SELECT * FROM [${dbName}].[dbo].[${tableName}] UNION ALL SELECT * FROM [${dbName}].[dbo].[${liveTableName}]) AS combined_t ${whereClause}
       GROUP BY model, color, description 
       ORDER BY model ASC, color ASC, description ASC
     `;
@@ -392,6 +397,7 @@ router.get('/hourly/export', verifyToken, verifyRole(['IT', 'MANAGEMENT']), asyn
   try {
     const { tipe, tanggal1, tanggal2, jam1, jam2 } = req.query;
     const tableName = tipe === 'receiving' ? 'data_receiving' : 'data_shipping';
+    const liveTableName = tipe === 'receiving' ? 'receiving' : 'shipping';
 
     const result = await query(`
       SELECT 
@@ -405,7 +411,7 @@ router.get('/hourly/export', verifyToken, verifyRole(['IT', 'MANAGEMENT']), asyn
         username as [USERNAME],
         description as [DESCRIPTION],
         scan_no as [SCAN NO]
-      FROM [${dbName}].[dbo].[${tableName}]
+      FROM (SELECT * FROM [${dbName}].[dbo].[${tableName}] UNION ALL SELECT * FROM [${dbName}].[dbo].[${liveTableName}]) AS combined_t
       WHERE date_time >= @start AND date_time <= @end
       ORDER BY date_time DESC
     `, { start: `${tanggal1} ${jam1}`, end: `${tanggal2} ${jam2}` });

@@ -126,7 +126,7 @@ router.put('/:no', verifyToken, verifyRole(['IT']), async (req, res) => {
 
     // Check if exists
     const existing = await query(
-      'SELECT no FROM [${dbName}].[dbo].[stok] WHERE no = @no',
+      `SELECT no FROM [${dbName}].[dbo].[stok] WHERE no = @no`,
       { no: parseInt(no) }
     );
 
@@ -201,7 +201,7 @@ router.delete('/:no', verifyToken, verifyRole(['IT']), async (req, res) => {
 
     // Check if exists
     const existing = await query(
-      'SELECT no FROM [${dbName}].[dbo].[stok] WHERE no = @no',
+      `SELECT no FROM [${dbName}].[dbo].[stok] WHERE no = @no`,
       { no: parseInt(no) }
     );
 
@@ -214,7 +214,7 @@ router.delete('/:no', verifyToken, verifyRole(['IT']), async (req, res) => {
 
     // Delete
     await query(
-      'DELETE FROM [${dbName}].[dbo].[stok] WHERE no = @no',
+      `DELETE FROM [${dbName}].[dbo].[stok] WHERE no = @no`,
       { no: parseInt(no) }
     );
 

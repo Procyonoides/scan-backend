@@ -77,6 +77,10 @@ router.get('/', verifyToken, verifyRole(['IT', 'MANAGEMENT']), async (req, res) 
               SELECT 1 FROM [${dbName}].[dbo].[data_receiving] dr
               WHERE dr.model = m.model 
               AND dr.date_time >= DATEADD(MONTH, -1, GETDATE())
+            ) OR EXISTS (
+              SELECT 1 FROM [${dbName}].[dbo].[receiving] r
+              WHERE r.model = m.model 
+              AND r.date_time >= DATEADD(MONTH, -1, GETDATE())
             ) THEN 'RUN'
             ELSE 'STOP'
           END AS status_production
@@ -135,10 +139,18 @@ router.get('/warehouse-stats', verifyToken, verifyRole(['IT', 'MANAGEMENT']), as
     const result = await query(`
       SELECT 
         ISNULL((SELECT SUM(stock) FROM [${dbName}].[dbo].[master_database]), 0) as first_stock,
-        ISNULL((SELECT COUNT(*) FROM [${dbName}].[dbo].[data_receiving] 
-                WHERE CAST(date_time AS DATE) = CAST(GETDATE() AS DATE)), 0) as receiving,
-        ISNULL((SELECT COUNT(*) FROM [${dbName}].[dbo].[data_shipping] 
-                WHERE CAST(date_time AS DATE) = CAST(GETDATE() AS DATE)), 0) as shipping,
+        (
+          ISNULL((SELECT COUNT(*) FROM [${dbName}].[dbo].[receiving] 
+                  WHERE CAST(date_time AS DATE) = CAST(GETDATE() AS DATE)), 0) +
+          ISNULL((SELECT COUNT(*) FROM [${dbName}].[dbo].[data_receiving] 
+                  WHERE CAST(date_time AS DATE) = CAST(GETDATE() AS DATE)), 0)
+        ) as receiving,
+        (
+          ISNULL((SELECT COUNT(*) FROM [${dbName}].[dbo].[shipping] 
+                  WHERE CAST(date_time AS DATE) = CAST(GETDATE() AS DATE)), 0) +
+          ISNULL((SELECT COUNT(*) FROM [${dbName}].[dbo].[data_shipping] 
+                  WHERE CAST(date_time AS DATE) = CAST(GETDATE() AS DATE)), 0)
+        ) as shipping,
         ISNULL((SELECT SUM(stock) FROM [${dbName}].[dbo].[master_database]), 0) as warehouse_stock
     `);
 
@@ -166,6 +178,16 @@ router.get('/chart-data', verifyToken, verifyRole(['IT', 'MANAGEMENT']), async (
         SELECT CAST(DATEADD(day, -number, GETDATE()) AS DATE) as date
         FROM master.dbo.spt_values
         WHERE type = 'P' AND number BETWEEN 0 AND 6
+      ),
+      CombinedReceiving AS (
+        SELECT date_time FROM [${dbName}].[dbo].[receiving] WHERE date_time >= DATEADD(day, -7, CAST(GETDATE() AS DATE))
+        UNION ALL
+        SELECT date_time FROM [${dbName}].[dbo].[data_receiving] WHERE date_time >= DATEADD(day, -7, CAST(GETDATE() AS DATE))
+      ),
+      CombinedShipping AS (
+        SELECT date_time FROM [${dbName}].[dbo].[shipping] WHERE date_time >= DATEADD(day, -7, CAST(GETDATE() AS DATE))
+        UNION ALL
+        SELECT date_time FROM [${dbName}].[dbo].[data_shipping] WHERE date_time >= DATEADD(day, -7, CAST(GETDATE() AS DATE))
       )
       SELECT 
         CONVERT(VARCHAR, d.date, 23) as date,
@@ -174,14 +196,12 @@ router.get('/chart-data', verifyToken, verifyRole(['IT', 'MANAGEMENT']), async (
       FROM Last7Days d
       LEFT JOIN (
         SELECT CAST(date_time AS DATE) as date, COUNT(*) as receiving
-        FROM [${dbName}].[dbo].[data_receiving]
-        WHERE date_time >= DATEADD(day, -7, CAST(GETDATE() AS DATE))
+        FROM CombinedReceiving
         GROUP BY CAST(date_time AS DATE)
       ) r ON d.date = r.date
       LEFT JOIN (
         SELECT CAST(date_time AS DATE) as date, COUNT(*) as shipping
-        FROM [${dbName}].[dbo].[data_shipping]
-        WHERE date_time >= DATEADD(day, -7, CAST(GETDATE() AS DATE))
+        FROM CombinedShipping
         GROUP BY CAST(date_time AS DATE)
       ) s ON d.date = s.date
       ORDER BY d.date ASC
