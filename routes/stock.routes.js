@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const { query, dbName } = require('../config/database');
 const { verifyToken, verifyRole } = require('../middleware/auth.middleware');
+const { getWarehouseStats } = require('../utils/warehouseStats');
 
 /**
  * GET /api/stocks
@@ -136,26 +137,23 @@ router.get('/warehouse-stats', verifyToken, verifyRole(['IT', 'MANAGEMENT']), as
   try {
     console.log('📊 Fetching warehouse stats...');
 
-    const result = await query(`
-      SELECT 
-        ISNULL((SELECT SUM(stock) FROM [${dbName}].[dbo].[master_database]), 0) as first_stock,
-        (
-          ISNULL((SELECT COUNT(*) FROM [${dbName}].[dbo].[receiving] 
-                  WHERE CAST(date_time AS DATE) = CAST(GETDATE() AS DATE)), 0) +
-          ISNULL((SELECT COUNT(*) FROM [${dbName}].[dbo].[data_receiving] 
-                  WHERE CAST(date_time AS DATE) = CAST(GETDATE() AS DATE)), 0)
-        ) as receiving,
-        (
-          ISNULL((SELECT COUNT(*) FROM [${dbName}].[dbo].[shipping] 
-                  WHERE CAST(date_time AS DATE) = CAST(GETDATE() AS DATE)), 0) +
-          ISNULL((SELECT COUNT(*) FROM [${dbName}].[dbo].[data_shipping] 
-                  WHERE CAST(date_time AS DATE) = CAST(GETDATE() AS DATE)), 0)
-        ) as shipping,
-        ISNULL((SELECT SUM(stock) FROM [${dbName}].[dbo].[master_database]), 0) as warehouse_stock
-    `);
+    // ⚠️ Sebelumnya endpoint ini punya query sendiri yang salah:
+    // first_stock dan warehouse_stock sama-sama SUM(stock) dari master_database
+    // (persis bug lama di CI3), jadi dua-duanya selalu identik.
+    // Sekarang dipakaikan helper yang sama dengan /api/dashboard/warehouse-stats
+    // supaya first_stock (snapshot awal hari) dan warehouse_stock (live saat ini)
+    // benar-benar dua angka yang berbeda dan konsisten di seluruh aplikasi.
+    const stats = await getWarehouseStats(query, dbName);
 
-    console.log('✅ Warehouse stats:', result.recordset[0]);
-    res.json(result.recordset[0]);
+    const response = {
+      first_stock: stats.firstStock,
+      receiving: stats.receivingCount,
+      shipping: stats.shippingCount,
+      warehouse_stock: stats.warehouseStock
+    };
+
+    console.log('✅ Warehouse stats:', response);
+    res.json(response);
   } catch (err) {
     console.error('❌ Warehouse stats error:', err);
     res.status(500).json({

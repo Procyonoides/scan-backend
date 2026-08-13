@@ -16,14 +16,25 @@ const transactionRoutes = require('./routes/transaction.routes');
 const userRoutes = require('./routes/user.routes');
 const dashboardRoutes = require('./routes/dashboard.routes');
 const optionRoutes = require('./routes/option.routes');
+const productionMonitoringRoutes = require('./routes/productionMonitoring.routes');
 
 const app = express();
 const server = http.createServer(app);
 
+// ============ CORS ORIGINS ============
+// CORS_ORIGIN in .env can now hold one or more origins, comma-separated,
+// e.g.  CORS_ORIGIN=http://localhost:4200,http://localhost:4201
+// Falls back to the two known dev origins (scan-system, production-monitoring)
+// if the env var isn't set.
+const allowedOrigins = (process.env.CORS_ORIGIN || 'http://localhost:4200,http://localhost:4201')
+  .split(',')
+  .map(o => o.trim())
+  .filter(Boolean);
+
 // ============ SOCKET.IO SETUP ============
 const io = new Server(server, {
   cors: {
-    origin: process.env.CORS_ORIGIN || 'http://localhost:4200',
+    origin: allowedOrigins,
     methods: ['GET', 'POST'],
     credentials: true
   }
@@ -43,7 +54,7 @@ app.set('io', io);
 
 // ============ MIDDLEWARE ============
 app.use(cors({
-  origin: process.env.CORS_ORIGIN || 'http://localhost:4200',
+  origin: allowedOrigins,
   credentials: true
 }));
 app.use(express.json());
@@ -88,6 +99,7 @@ app.use('/api/transactions', transactionRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/options', optionRoutes);
+app.use('/api/production-monitoring', productionMonitoringRoutes);
 
 // 404 handler
 app.use((req, res) => {

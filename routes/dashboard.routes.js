@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const { query, dbName } = require('../config/database');
 const { verifyToken, verifyRole } = require('../middleware/auth.middleware');
+const { getWarehouseStats } = require('../utils/warehouseStats');
 
 /**
  * ========== STOCK MONITORING LOGIC (dari hskpro) ==========
@@ -37,67 +38,15 @@ router.get('/warehouse-stats', verifyToken, verifyRole(['IT', 'MANAGEMENT']), as
   try {
     console.log('📦 Fetching warehouse stats...');
 
-    // 1. Get today's scan counts and quantities
-    const scanResult = await query(`
-      SELECT 
-        ISNULL((SELECT COUNT(*) FROM [${dbName}].[dbo].[receiving] WHERE CAST(date_time AS DATE) = CAST(GETDATE() AS DATE)), 0) as receiving_count,
-        ISNULL((SELECT SUM(quantity) FROM [${dbName}].[dbo].[receiving] WHERE CAST(date_time AS DATE) = CAST(GETDATE() AS DATE)), 0) as receiving_qty,
-        ISNULL((SELECT COUNT(*) FROM [${dbName}].[dbo].[shipping] WHERE CAST(date_time AS DATE) = CAST(GETDATE() AS DATE)), 0) as shipping_count,
-        ISNULL((SELECT SUM(quantity) FROM [${dbName}].[dbo].[shipping] WHERE CAST(date_time AS DATE) = CAST(GETDATE() AS DATE)), 0) as shipping_qty
-    `);
-
-    const scanStats = scanResult.recordset[0] || {};
-
-    // 2. Try to get today's stok record first
-    const stokResult = await query(`
-      SELECT TOP 1
-        ISNULL(stock_awal, 0) as first_stock,
-        ISNULL(stock_akhir, 0) as warehouse_stock
-      FROM [${dbName}].[dbo].[stok]
-      WHERE CAST(date AS DATE) = CAST(GETDATE() AS DATE)
-      ORDER BY date DESC
-    `);
-
-    let firstStock = 0;
-    let warehouseStock = 0;
-
-    if (stokResult.recordset.length > 0) {
-      // If stok record exists for today, use it
-      firstStock = stokResult.recordset[0].first_stock;
-      warehouseStock = stokResult.recordset[0].warehouse_stock;
-      console.log('✅ Today stok record found:', { firstStock, warehouseStock });
-    } else {
-      // If no stok record for today, calculate from yesterday and master_database
-      console.warn('⚠️ No stok record for today, calculating from yesterday + master_database');
-
-      // Get yesterday's stock_akhir as today's stock_awal
-      const yesterdayResult = await query(`
-        SELECT TOP 1 ISNULL(stock_akhir, 0) as yesterday_stock
-        FROM [${dbName}].[dbo].[stok]
-        WHERE CAST(date AS DATE) = CAST(DATEADD(day, -1, GETDATE()) AS DATE)
-        ORDER BY date DESC
-      `);
-
-      firstStock = yesterdayResult.recordset.length > 0 ? yesterdayResult.recordset[0].yesterday_stock : 0;
-
-      // Get current warehouse stock from master_database
-      const warehouseResult = await query(`
-        SELECT ISNULL(SUM(stock), 0) as warehouse_stock
-        FROM [${dbName}].[dbo].[master_database]
-      `);
-
-      warehouseStock = warehouseResult.recordset[0]?.warehouse_stock || 0;
-
-      console.log('📊 Calculated stats:', { firstStock, warehouseStock, receivingCount: scanStats.receiving_count });
-    }
+    const stats = await getWarehouseStats(query, dbName);
 
     const response = {
-      first_stock: firstStock,
-      receiving: scanStats.receiving_count,
-      receiving_qty: scanStats.receiving_qty,
-      shipping: scanStats.shipping_count,
-      shipping_qty: scanStats.shipping_qty,
-      warehouse_stock: warehouseStock
+      first_stock: stats.firstStock,
+      receiving: stats.receivingCount,
+      receiving_qty: stats.receivingQty,
+      shipping: stats.shippingCount,
+      shipping_qty: stats.shippingQty,
+      warehouse_stock: stats.warehouseStock
     };
 
     console.log('✅ Final warehouse stats:', response);
