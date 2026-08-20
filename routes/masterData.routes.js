@@ -4,6 +4,8 @@ const { query, dbName } = require('../config/database');
 const { verifyToken, verifyRole } = require('../middleware/auth.middleware');
 const multer = require('multer');
 const XLSX = require('xlsx');
+const { normalizeImportRows } = require('../utils/headerNormalizer');
+const { runInTransaction } = require('../utils/transaction');
 
 /**
  * GET /api/master-data/barcodes
@@ -610,14 +612,19 @@ router.post('/import-barcode', verifyToken, verifyRole(['IT']), upload.single('f
     const workbook = XLSX.read(req.file.buffer, { type: 'buffer' });
     const sheetName = workbook.SheetNames[0];
     const worksheet = workbook.Sheets[sheetName];
-    const data = XLSX.utils.sheet_to_json(worksheet);
+    const rawData = XLSX.utils.sheet_to_json(worksheet, { raw: false });
 
-    if (data.length === 0) {
+    if (rawData.length === 0) {
       return res.status(400).json({
         success: false,
         error: 'Excel file is empty'
       });
     }
+
+    // ✅ Normalisasi nama kolom (toleran ke "label size" vs "size", spasi vs
+    // underscore, dll) - logic-nya sekarang ada di utils/headerNormalizer.js
+    // supaya bisa di-unit-test terpisah tanpa perlu upload file Excel beneran.
+    const data = normalizeImportRows(rawData);
 
     console.log(`📊 Found ${data.length} records to import`);
 
@@ -729,7 +736,7 @@ router.post('/import-stock-opname', verifyToken, verifyRole(['IT']), upload.sing
     const workbook = XLSX.read(req.file.buffer, { type: 'buffer' });
     const sheetName = workbook.SheetNames[0];
     const worksheet = workbook.Sheets[sheetName];
-    const data = XLSX.utils.sheet_to_json(worksheet);
+    const data = XLSX.utils.sheet_to_json(worksheet, { raw: false });
 
     if (data.length === 0) {
       return res.status(400).json({
@@ -833,6 +840,40 @@ router.post('/import-stock-opname', verifyToken, verifyRole(['IT']), upload.sing
 // ==================== OPERATION ENDPOINTS ====================
 
 /**
+ * Cari record scan (receiving/shipping) di 3 lapis tabel yang mungkin
+ * menyimpannya (aktif -> arsip -> backup), sekalian ambil original_barcode
+ * dan quantity aslinya. Dipakai bareng oleh PUT dan DELETE /record supaya:
+ *   1. Bisa nolak dengan 404 kalau recordnya beneran gak ketemu di mana pun
+ *      (sebelumnya UPDATE/DELETE dijalankan buta ke 3 tabel tanpa ngecek,
+ *      jadi selalu "success" walau 0 baris yang berubah)
+ *   2. Tau original_barcode & quantity lama-nya, buat nyesuain stock di
+ *      master_database (sebelumnya edit/hapus record SAMA SEKALI gak
+ *      nyentuh stock, jadi stock lama-lama melenceng dari histori scan)
+ */
+async function findRecordLocation(type, dateTime, scanNo, username, queryFn = query) {
+  const activeTable = type;
+  const archiveTable = type === 'receiving' ? 'data_receiving' : 'data_shipping';
+  const backupTable = type === 'receiving' ? 'backup_receiving' : 'backup_shipping';
+
+  for (const table of [activeTable, archiveTable, backupTable]) {
+    const result = await queryFn(`
+      SELECT original_barcode, quantity
+      FROM [${dbName}].[dbo].[${table}]
+      WHERE date_time = @dateTime AND scan_no = @scanNo AND username = @username
+    `, { dateTime, scanNo: parseInt(scanNo), username });
+
+    if (result.recordset.length > 0) {
+      return {
+        table,
+        original_barcode: result.recordset[0].original_barcode,
+        quantity: result.recordset[0].quantity
+      };
+    }
+  }
+  return null;
+}
+
+/**
  * GET /api/master-data/records
  * Get transaction records from data_receiving or data_shipping
  */
@@ -918,32 +959,55 @@ router.put('/record', verifyToken, verifyRole(['IT']), async (req, res) => {
       return res.status(400).json({ success: false, error: 'Missing unique identifiers (type, dateTime, scanNo, oldUsername)' });
     }
 
-    const activeTable = type;
-    const archiveTable = type === 'receiving' ? 'data_receiving' : 'data_shipping';
-    const backupTable = type === 'receiving' ? 'backup_receiving' : 'backup_shipping';
+    const newQuantity = parseInt(quantity);
+    if (isNaN(newQuantity) || newQuantity < 0) {
+      return res.status(400).json({ success: false, error: 'Invalid quantity' });
+    }
 
-    const updateSql = `
-      SET quantity = @quantity,
-          username = @username,
-          description = @description
-      WHERE date_time = @dateTime AND scan_no = @scanNo AND username = @oldUsername
-    `;
+    // ✅ FIX: cari, update record, DAN sinkronin stock - semua dibungkus SATU
+    // transaksi (runInTransaction). Kalau update record berhasil tapi update
+    // stock gagal (atau sebaliknya), DUA-DUANYA di-rollback, gak ada yang
+    // nyangkut setengah jalan.
+    const result = await runInTransaction(async (txQuery) => {
+      const found = await findRecordLocation(type, dateTime, scanNo, oldUsername, txQuery);
+      if (!found) {
+        return { notFound: true };
+      }
 
-    const params = {
-      dateTime,
-      scanNo: parseInt(scanNo),
-      oldUsername,
-      quantity: parseInt(quantity),
-      username,
-      description
-    };
+      await txQuery(`
+        UPDATE [${dbName}].[dbo].[${found.table}]
+        SET quantity = @quantity, username = @username, description = @description
+        WHERE date_time = @dateTime AND scan_no = @scanNo AND username = @oldUsername
+      `, { dateTime, scanNo: parseInt(scanNo), oldUsername, quantity: newQuantity, username, description });
 
-    // Update in all tiers (one will have it)
-    await query(`UPDATE [${dbName}].[dbo].[${activeTable}] ${updateSql}`, params);
-    await query(`UPDATE [${dbName}].[dbo].[${archiveTable}] ${updateSql}`, params);
-    await query(`UPDATE [${dbName}].[dbo].[${backupTable}] ${updateSql}`, params);
+      // Sinkronin stock sebesar SELISIH quantity:
+      //   - receiving: quantity naik -> stock ikut naik; turun -> stock turun
+      //   - shipping: kebalikannya
+      const delta = newQuantity - found.quantity;
+      let stockAdjustment = 0;
+      if (delta !== 0) {
+        stockAdjustment = type === 'receiving' ? delta : -delta;
+        await txQuery(`
+          UPDATE [${dbName}].[dbo].[master_database]
+          SET stock = stock + @stockAdjustment
+          WHERE original_barcode = @barcode
+        `, { stockAdjustment, barcode: found.original_barcode });
+      }
 
-    res.json({ success: true, message: 'Record updated successfully' });
+      return { notFound: false, table: found.table, original_barcode: found.original_barcode, stockAdjustment };
+    });
+
+    if (result.notFound) {
+      return res.status(404).json({ success: false, error: 'Record not found' });
+    }
+
+    console.log(`✅ Record updated: ${result.table}, stock adjustment: ${result.stockAdjustment} for ${result.original_barcode}`);
+
+    res.json({
+      success: true,
+      message: 'Record updated successfully',
+      stockAdjustment: result.stockAdjustment
+    });
 
   } catch (err) {
     console.error('Update record error:', err);
@@ -963,18 +1027,45 @@ router.delete('/record', verifyToken, verifyRole(['IT']), async (req, res) => {
       return res.status(400).json({ success: false, error: 'Missing unique identifiers' });
     }
 
-    const activeTable = type;
-    const archiveTable = type === 'receiving' ? 'data_receiving' : 'data_shipping';
-    const backupTable = type === 'receiving' ? 'backup_receiving' : 'backup_shipping';
+    // ✅ FIX: cari, hapus record, DAN sinkronin stock - dibungkus SATU
+    // transaksi, sama kayak PUT /record di atas.
+    const result = await runInTransaction(async (txQuery) => {
+      const found = await findRecordLocation(type, dateTime, scanNo, username, txQuery);
+      if (!found) {
+        return { notFound: true };
+      }
 
-    const deleteSql = `WHERE date_time = @dateTime AND scan_no = @scanNo AND username = @username`;
-    const params = { dateTime, scanNo: parseInt(scanNo), username };
+      await txQuery(`
+        DELETE FROM [${dbName}].[dbo].[${found.table}]
+        WHERE date_time = @dateTime AND scan_no = @scanNo AND username = @username
+      `, { dateTime, scanNo: parseInt(scanNo), username });
 
-    await query(`DELETE FROM [${dbName}].[dbo].[${activeTable}] ${deleteSql}`, params);
-    await query(`DELETE FROM [${dbName}].[dbo].[${archiveTable}] ${deleteSql}`, params);
-    await query(`DELETE FROM [${dbName}].[dbo].[${backupTable}] ${deleteSql}`, params);
+      // Hapus record = batalkan efek stock yang dulu ditimbulkan record ini:
+      //   - hapus record receiving -> barang gak pernah "resmi" masuk ->
+      //     stock DIKURANGI sejumlah quantity yang dihapus
+      //   - hapus record shipping -> barang gak pernah "resmi" keluar ->
+      //     stock DIKEMBALIKAN (ditambah) sejumlah quantity itu
+      const stockAdjustment = type === 'receiving' ? -found.quantity : found.quantity;
+      await txQuery(`
+        UPDATE [${dbName}].[dbo].[master_database]
+        SET stock = stock + @stockAdjustment
+        WHERE original_barcode = @barcode
+      `, { stockAdjustment, barcode: found.original_barcode });
 
-    res.json({ success: true, message: 'Record deleted successfully' });
+      return { notFound: false, table: found.table, original_barcode: found.original_barcode, stockAdjustment };
+    });
+
+    if (result.notFound) {
+      return res.status(404).json({ success: false, error: 'Record not found' });
+    }
+
+    console.log(`✅ Record deleted: ${result.table}, stock adjustment: ${result.stockAdjustment} for ${result.original_barcode}`);
+
+    res.json({
+      success: true,
+      message: 'Record deleted successfully',
+      stockAdjustment: result.stockAdjustment
+    });
 
   } catch (err) {
     console.error('Delete record error:', err);
@@ -1001,22 +1092,28 @@ router.post('/backup', verifyToken, verifyRole(['IT']), async (req, res) => {
 
     console.log(`📦 Archiving ${type} data older than ${backupDate}`);
 
-    // Insert into backup table
-    await query(`
-      INSERT INTO [${dbName}].[dbo].[${backupTable}]
-      SELECT * FROM [${dbName}].[dbo].[${activeTable}]
-      WHERE date_time < @backupDate
-    `, { backupDate });
+    // ✅ FIX: INSERT (ke backup) dan DELETE (dari tabel aktif) dibungkus SATU
+    // transaksi - kalau salah satu gagal di tengah jalan (misal koneksi
+    // putus), dua-duanya di-rollback bareng, gak ada resiko data ke-duplikat
+    // atau hilang.
+    const affected = await runInTransaction(async (txQuery) => {
+      await txQuery(`
+        INSERT INTO [${dbName}].[dbo].[${backupTable}]
+        SELECT * FROM [${dbName}].[dbo].[${activeTable}]
+        WHERE date_time < @backupDate
+      `, { backupDate });
 
-    // Delete from active table
-    const deleteResult = await query(`
-      DELETE FROM [${dbName}].[dbo].[${activeTable}]
-      WHERE date_time < @backupDate
-    `, { backupDate });
+      const deleteResult = await txQuery(`
+        DELETE FROM [${dbName}].[dbo].[${activeTable}]
+        WHERE date_time < @backupDate
+      `, { backupDate });
+
+      return deleteResult.rowsAffected[0];
+    });
 
     res.json({
       success: true,
-      message: `Archived ${deleteResult.rowsAffected[0]} records to ${backupTable}`
+      message: `Archived ${affected} records to ${backupTable}`
     });
 
   } catch (err) {
