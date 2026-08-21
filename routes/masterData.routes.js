@@ -926,7 +926,7 @@ router.get('/records', verifyToken, verifyRole(['IT', 'MANAGEMENT']), async (req
     // 2. Get paginated data
     const dataQuery = `
       SELECT original_barcode, brand, model, color, size, quantity, username, 
-             description, scan_no, CONVERT(varchar, date_time, 120) as date_time
+             description, scan_no, CONVERT(varchar, date_time, 121) as date_time
       FROM (${baseSubquery}) as combined_records
       ${whereClause}
       ORDER BY date_time DESC

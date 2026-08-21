@@ -65,4 +65,9 @@ async function query(sql, params = {}) {
   }
 }
 
-module.exports = { connectDB, pool, query, dbName: config.database };
+module.exports = {
+  connectDB,
+  query,
+  dbName: config.database,
+  getPool: () => pool
+};

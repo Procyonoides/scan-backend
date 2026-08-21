@@ -233,6 +233,41 @@ describe('POST /api/master-data/batch-delete', () => {
   });
 });
 
+describe('GET /api/master-data/records', () => {
+  beforeEach(() => query.mockReset());
+
+  test('400 kalau type gak valid', async () => {
+    const res = await request(app).get('/api/master-data/records?type=invalid');
+
+    expect(res.status).toBe(400);
+    expect(query).not.toHaveBeenCalled();
+  });
+
+  test('date_time dikirim ke frontend LENGKAP dengan milidetik (format 121), bukan dipotong (format 120)', async () => {
+    query
+      .mockResolvedValueOnce({ recordset: [{ total: 1 }] })
+      .mockResolvedValueOnce({ recordset: [{ original_barcode: 'ABC123', date_time: '2026-01-14 10:15:23.837' }] });
+
+    await request(app).get('/api/master-data/records?type=receiving');
+
+    const dataQuerySql = query.mock.calls[1][0];
+    expect(dataQuerySql).toMatch(/CONVERT\(varchar, date_time, 121\)/);
+    expect(dataQuerySql).not.toMatch(/CONVERT\(varchar, date_time, 120\)/);
+  });
+
+  test('sukses balikin data dengan pagination', async () => {
+    query
+      .mockResolvedValueOnce({ recordset: [{ total: 1 }] })
+      .mockResolvedValueOnce({ recordset: [{ original_barcode: 'ABC123' }] });
+
+    const res = await request(app).get('/api/master-data/records?type=receiving&page=1&limit=50');
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toHaveLength(1);
+    expect(res.body.total).toBe(1);
+  });
+});
+
 describe('PUT /api/master-data/record (edit record + sinkron stock)', () => {
   beforeEach(() => mockTxQuery.mockReset());
 
