@@ -269,41 +269,51 @@ router.get('/monthly/export', verifyToken, verifyRole(['IT', 'MANAGEMENT']), asy
     const whereClause = conditions.length > 0 ? 'WHERE ' + conditions.join(' AND ') : '';
     const result = await query(`
       SELECT 
-        production as [PRODUCTION],
-        brand as [BRAND],
-        model as [MODEL],
-        color as [COLOR],
-        size as [SIZE],
-        description as [DESCRIPTION],
-        SUM(quantity) as [TOTAL]
+        production,
+        brand,
+        model,
+        item,
+        color,
+        size,
+        description,
+        SUM(quantity) as total
       FROM (SELECT * FROM [${dbName}].[dbo].[${tableName}] UNION ALL SELECT * FROM [${dbName}].[dbo].[${liveTableName}]) AS combined_t
       ${whereClause}
-      GROUP BY production, brand, model, color, size, description
+      GROUP BY production, brand, model, item, color, size, description
       ORDER BY model, color, size
     `, params);
-
-    const nowTime = new Date().toLocaleTimeString('id-ID');
-    const username = req.user.username;
 
     const data = result.recordset;
     if (data.length === 0) return res.status(404).json({ success: false, error: 'No data' });
 
-    const grandTotal = data.reduce((sum, row) => sum + (parseInt(row.TOTAL) || 0), 0);
+    const grandTotal = data.reduce((sum, row) => sum + (parseInt(row.total) || 0), 0);
+
+    const formattedData = data.map((row, index) => ({
+      'NO': index + 1,
+      'PRODUCTION': row.production,
+      'BRAND': row.brand,
+      'MODEL': row.model,
+      'ITEM': row.item,
+      'COLOR': row.color,
+      'SIZE': row.size,
+      'DESCRIPTION': row.description,
+      'TOTAL': row.total
+    }));
+
     const wb = XLSX.utils.book_new();
     const ws = XLSX.utils.json_to_sheet([]);
 
     XLSX.utils.sheet_add_aoa(ws, [
-      [`DETAIL MONTHLY ${tipe.toUpperCase()} DATE ${tanggal1} to ${tanggal2} TIME ${nowTime}`],
-      [`USERNAME: ${username}`],
+      [`DETAIL MONTHLY ${tipe.toUpperCase()} ${tanggal1} TO ${tanggal2}`],
       []
     ], { origin: 'A1' });
 
-    XLSX.utils.sheet_add_json(ws, data, { origin: 'A4', skipHeader: false });
+    XLSX.utils.sheet_add_json(ws, formattedData, { origin: 'A3', skipHeader: false });
 
-    XLSX.utils.sheet_add_aoa(ws, [[null, null, null, null, null, 'GRAND TOTAL', grandTotal]], { origin: `A${data.length + 5}` });
+    XLSX.utils.sheet_add_aoa(ws, [[null, null, null, null, null, null, null, 'GRAND TOTAL', grandTotal]], { origin: `A${formattedData.length + 4}` });
 
     ws['!cols'] = [
-      { wch: 15 }, { wch: 15 }, { wch: 40 }, { wch: 32 }, { wch: 10 }, { wch: 20 }, { wch: 10 }
+      { wch: 6 }, { wch: 15 }, { wch: 15 }, { wch: 40 }, { wch: 20 }, { wch: 32 }, { wch: 10 }, { wch: 20 }, { wch: 10 }
     ];
 
     XLSX.utils.book_append_sheet(wb, ws, 'Monthly Report');
@@ -338,8 +348,8 @@ router.get('/summary/export', verifyToken, verifyRole(['IT', 'MANAGEMENT']), asy
       params.start_date = `${tanggal1} 07:30:00`;
       params.end_date = `${tanggal2} 07:29:59`;
     }
-    const nowTime = new Date().toLocaleTimeString('id-ID');
-    const username = req.user.username;
+
+    const todayDate = new Date().toISOString().split('T')[0];
 
     const sizes = ['10K', '10TK', '11K', '11TK', '12K', '12TK', '13K', '13TK', '1', '1T', '2', '2T', '3', '3T', '4', '4T', '5', '5T', '6', '6T', '7', '7T', '8', '8T', '9', '9T', '10', '10T', '11', '11T', '12', '12T', '13', '13T', '14', '14T', '15', '15T', '16', '16T', '17', '17T', '18', '18T'];
     let pivotSelect = sizes.map((s, i) => `SUM(CASE WHEN size = '${s}' THEN quantity ELSE 0 END) AS [size_${i + 1}]`).join(', ');
@@ -370,8 +380,8 @@ router.get('/summary/export', verifyToken, verifyRole(['IT', 'MANAGEMENT']), asy
     const ws = XLSX.utils.json_to_sheet([]);
 
     XLSX.utils.sheet_add_aoa(ws, [
-      [`SUMMARY ${tipe.toUpperCase()} DATE ${tanggal1} to ${tanggal2} TIME ${nowTime}`],
-      [`USERNAME: ${username}`],
+      [`SUMMARY MONTHLY ${tipe.toUpperCase()} ${tanggal1} TO ${tanggal2}`],
+      [`DATE: ${todayDate}`],
       []
     ], { origin: 'A1' });
 
