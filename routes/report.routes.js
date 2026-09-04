@@ -1,25 +1,44 @@
 const express = require('express');
 const router = express.Router();
-const XLSX = require('xlsx');
+const ExcelJS = require('exceljs');
 const { query, dbName } = require('../config/database');
 const { verifyToken, verifyRole } = require('../middleware/auth.middleware');
 
+const HEADER_FILL = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD3D3D3' } };
+const THIN_BORDER = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } };
+
+function styleTitle(sheet, text, colCount) {
+  sheet.mergeCells(1, 1, 1, colCount);
+  const cell = sheet.getCell(1, 1);
+  cell.value = text;
+  cell.font = { name: 'Calibri', size: 14, bold: true };
+  cell.alignment = { horizontal: 'center', vertical: 'middle' };
+}
+
+function styleHeaderRow(sheet, rowNum, headers) {
+  headers.forEach((h, i) => {
+    const cell = sheet.getCell(rowNum, i + 1);
+    cell.value = h;
+    cell.font = { name: 'Calibri', size: 11, bold: true };
+    cell.alignment = { horizontal: 'center', vertical: 'middle' };
+    cell.fill = HEADER_FILL;
+    cell.border = THIN_BORDER;
+  });
+}
+
+function styleDataCell(cell, value, center) {
+  cell.value = value;
+  cell.font = { name: 'Calibri', size: 12 };
+  cell.border = THIN_BORDER;
+  if (center) cell.alignment = { horizontal: 'center', vertical: 'middle' };
+}
+
 /**
  * GET /api/reports/daily
- * Get daily report with filters
- * ✅ SESUAI PHP: view_daily_it.php & view_daily_management.php
  */
 router.get('/daily', verifyToken, verifyRole(['IT', 'MANAGEMENT']), async (req, res) => {
   try {
-    const {
-      tipe,      // 'receiving' atau 'shipping'
-      model,
-      color,
-      size,
-      user,
-      tanggal1,  // start date
-      tanggal2   // end date
-    } = req.query;
+    const { tipe, model, color, size, user, tanggal1, tanggal2 } = req.query;
 
     if (!tipe) {
       return res.status(400).json({ success: false, error: 'Transaction type (tipe) is required' });
@@ -86,7 +105,6 @@ router.get('/daily', verifyToken, verifyRole(['IT', 'MANAGEMENT']), async (req, 
 
 /**
  * GET /api/reports/monthly
- * Get monthly report (summary by model, color, size)
  */
 router.get('/monthly', verifyToken, verifyRole(['IT', 'MANAGEMENT']), async (req, res) => {
   try {
@@ -173,7 +191,7 @@ router.get('/filter-options', verifyToken, verifyRole(['IT', 'MANAGEMENT']), asy
 
 /**
  * GET /api/reports/daily/export
- * Export daily report to XLSX
+ * Format mengikuti application/views/excel_detail_daily.php di sistem lama
  */
 router.get('/daily/export', verifyToken, verifyRole(['IT', 'MANAGEMENT']), async (req, res) => {
   try {
@@ -196,49 +214,69 @@ router.get('/daily/export', verifyToken, verifyRole(['IT', 'MANAGEMENT']), async
     const whereClause = conditions.length > 0 ? 'WHERE ' + conditions.join(' AND ') : '';
     const result = await query(`
       SELECT 
-        scan_no as [SCAN NO],
-        CONVERT(varchar, date_time, 120) as [DATE/TIME],
-        production as [PRODUCTION],
-        brand as [BRAND],
-        model as [MODEL],
-        color as [COLOR],
-        size as [SIZE],
-        quantity as [QUANTITY],
-        username as [USERNAME],
-        description as [DESCRIPTION]
+        scan_no,
+        CONVERT(varchar, date_time, 120) as date_time,
+        production,
+        brand,
+        model,
+        item,
+        color,
+        size,
+        username,
+        description,
+        quantity
       FROM (SELECT * FROM [${dbName}].[dbo].[${tableName}] UNION ALL SELECT * FROM [${dbName}].[dbo].[${liveTableName}]) AS combined_t
       ${whereClause}
       ORDER BY date_time DESC
     `, params);
 
-    const nowTime = new Date().toLocaleTimeString('id-ID');
-    const username = req.user.username;
-
     const data = result.recordset;
     if (data.length === 0) return res.status(404).json({ success: false, error: 'No data' });
 
-    const grandTotal = data.reduce((sum, row) => sum + (parseInt(row.QUANTITY) || 0), 0);
-    const wb = XLSX.utils.book_new();
-    const ws = XLSX.utils.json_to_sheet([]);
+    const grandTotal = data.reduce((sum, row) => sum + (parseInt(row.quantity) || 0), 0);
 
-    XLSX.utils.sheet_add_aoa(ws, [
-      [`DETAIL DAILY ${tipe.toUpperCase()} DATE ${tanggal1} to ${tanggal2} TIME ${nowTime}`],
-      [`USERNAME: ${username}`],
-      []
-    ], { origin: 'A1' });
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet('Daily Report');
 
-    XLSX.utils.sheet_add_json(ws, data, { origin: 'A4', skipHeader: false });
+    const headers = ['SCAN NO', 'DATE/TIME', 'PRODUCTION', 'BRAND', 'MODEL', 'ITEM', 'COLOR', 'SIZE', 'USERNAME', 'DESCRIPTION', 'QUANTITY'];
+    styleTitle(sheet, `DETAIL DAILY ${tipe.toUpperCase()} ${tanggal1} TO ${tanggal2}`, headers.length);
+    styleHeaderRow(sheet, 3, headers);
 
-    // GRAND TOTAL row
-    XLSX.utils.sheet_add_aoa(ws, [[null, null, null, null, null, null, null, 'GRAND TOTAL', grandTotal]], { origin: `A${data.length + 5}` });
+    data.forEach((row, idx) => {
+      const r = 4 + idx;
+      styleDataCell(sheet.getCell(r, 1), row.scan_no, true);
+      styleDataCell(sheet.getCell(r, 2), row.date_time, false);
+      styleDataCell(sheet.getCell(r, 3), row.production, false);
+      styleDataCell(sheet.getCell(r, 4), row.brand, false);
+      styleDataCell(sheet.getCell(r, 5), row.model, false);
+      styleDataCell(sheet.getCell(r, 6), row.item, false);
+      styleDataCell(sheet.getCell(r, 7), row.color, false);
+      styleDataCell(sheet.getCell(r, 8), row.size, true);
+      styleDataCell(sheet.getCell(r, 9), row.username, false);
+      styleDataCell(sheet.getCell(r, 10), row.description, false);
+      styleDataCell(sheet.getCell(r, 11), row.quantity, true);
+    });
 
-    ws['!cols'] = [
-      { wch: 12 }, { wch: 20 }, { wch: 15 }, { wch: 15 }, { wch: 40 }, { wch: 32 }, { wch: 10 }, { wch: 15 }, { wch: 20 }, { wch: 10 }
+    const footerRow = 4 + data.length;
+    sheet.mergeCells(footerRow, 1, footerRow, 10);
+    const labelCell = sheet.getCell(footerRow, 1);
+    labelCell.value = 'GRAND TOTAL';
+    labelCell.font = { name: 'Calibri', size: 12, bold: true };
+    labelCell.alignment = { horizontal: 'center', vertical: 'middle' };
+    labelCell.border = THIN_BORDER;
+
+    const totalCell = sheet.getCell(footerRow, 11);
+    totalCell.value = grandTotal;
+    totalCell.font = { name: 'Calibri', size: 12, bold: true };
+    totalCell.alignment = { horizontal: 'center', vertical: 'middle' };
+    totalCell.border = THIN_BORDER;
+
+    sheet.columns = [
+      { width: 12 }, { width: 18 }, { width: 15 }, { width: 15 }, { width: 38 },
+      { width: 18 }, { width: 30 }, { width: 8 }, { width: 18 }, { width: 18 }, { width: 12 }
     ];
 
-    XLSX.utils.book_append_sheet(wb, ws, 'Daily Report');
-    const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
-
+    const buffer = await workbook.xlsx.writeBuffer();
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename=Detail_Daily_${tipe.toUpperCase()}_${tanggal1}.xlsx`);
     res.send(buffer);
@@ -249,7 +287,7 @@ router.get('/daily/export', verifyToken, verifyRole(['IT', 'MANAGEMENT']), async
 
 /**
  * GET /api/reports/monthly/export
- * Export monthly report to XLSX
+ * Format mengikuti application/views/excel_detail_monthly.php di sistem lama
  */
 router.get('/monthly/export', verifyToken, verifyRole(['IT', 'MANAGEMENT']), async (req, res) => {
   try {
@@ -288,37 +326,46 @@ router.get('/monthly/export', verifyToken, verifyRole(['IT', 'MANAGEMENT']), asy
 
     const grandTotal = data.reduce((sum, row) => sum + (parseInt(row.total) || 0), 0);
 
-    const formattedData = data.map((row, index) => ({
-      'NO': index + 1,
-      'PRODUCTION': row.production,
-      'BRAND': row.brand,
-      'MODEL': row.model,
-      'ITEM': row.item,
-      'COLOR': row.color,
-      'SIZE': row.size,
-      'DESCRIPTION': row.description,
-      'TOTAL': row.total
-    }));
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet('Monthly Report');
 
-    const wb = XLSX.utils.book_new();
-    const ws = XLSX.utils.json_to_sheet([]);
+    const headers = ['NO', 'PRODUCTION', 'BRAND', 'MODEL', 'ITEM', 'COLOR', 'SIZE', 'DESCRIPTION', 'TOTAL'];
+    styleTitle(sheet, `DETAIL MONTHLY ${tipe.toUpperCase()} ${tanggal1} TO ${tanggal2}`, headers.length);
+    styleHeaderRow(sheet, 3, headers);
 
-    XLSX.utils.sheet_add_aoa(ws, [
-      [`DETAIL MONTHLY ${tipe.toUpperCase()} ${tanggal1} TO ${tanggal2}`],
-      []
-    ], { origin: 'A1' });
+    data.forEach((row, idx) => {
+      const r = 4 + idx;
+      styleDataCell(sheet.getCell(r, 1), idx + 1, true);
+      styleDataCell(sheet.getCell(r, 2), row.production, false);
+      styleDataCell(sheet.getCell(r, 3), row.brand, false);
+      styleDataCell(sheet.getCell(r, 4), row.model, false);
+      styleDataCell(sheet.getCell(r, 5), row.item, false);
+      styleDataCell(sheet.getCell(r, 6), row.color, false);
+      styleDataCell(sheet.getCell(r, 7), row.size, true);
+      styleDataCell(sheet.getCell(r, 8), row.description, false);
+      styleDataCell(sheet.getCell(r, 9), row.total, true);
+    });
 
-    XLSX.utils.sheet_add_json(ws, formattedData, { origin: 'A3', skipHeader: false });
+    const footerRow = 4 + data.length;
+    sheet.mergeCells(footerRow, 1, footerRow, 8);
+    const labelCell = sheet.getCell(footerRow, 1);
+    labelCell.value = 'GRAND TOTAL';
+    labelCell.font = { name: 'Calibri', size: 12, bold: true };
+    labelCell.alignment = { horizontal: 'center', vertical: 'middle' };
+    labelCell.border = THIN_BORDER;
 
-    XLSX.utils.sheet_add_aoa(ws, [[null, null, null, null, null, null, null, 'GRAND TOTAL', grandTotal]], { origin: `A${formattedData.length + 4}` });
+    const totalCell = sheet.getCell(footerRow, 9);
+    totalCell.value = grandTotal;
+    totalCell.font = { name: 'Calibri', size: 12, bold: true };
+    totalCell.alignment = { horizontal: 'center', vertical: 'middle' };
+    totalCell.border = THIN_BORDER;
 
-    ws['!cols'] = [
-      { wch: 6 }, { wch: 15 }, { wch: 15 }, { wch: 40 }, { wch: 20 }, { wch: 32 }, { wch: 10 }, { wch: 20 }, { wch: 10 }
+    sheet.columns = [
+      { width: 6 }, { width: 15 }, { width: 15 }, { width: 38 }, { width: 18 },
+      { width: 30 }, { width: 8 }, { width: 18 }, { width: 10 }
     ];
 
-    XLSX.utils.book_append_sheet(wb, ws, 'Monthly Report');
-    const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
-
+    const buffer = await workbook.xlsx.writeBuffer();
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename=Detail_Monthly_${tipe.toUpperCase()}_${tanggal1}.xlsx`);
     res.send(buffer);
@@ -329,12 +376,14 @@ router.get('/monthly/export', verifyToken, verifyRole(['IT', 'MANAGEMENT']), asy
 
 /**
  * GET /api/reports/summary/export
- * Export summary report with sizes as columns (PIVOT/MATRIX)
- * ✅ SESUAI PHP: excel_summary.php
+ * Dipakai bareng oleh Daily Report & Monthly Report — bedanya cuma
+ * query param `periode` ('daily' atau 'monthly') buat judulnya.
+ * Format mengikuti application/views/excel_summary_daily.php /
+ * excel_summary_monthly.php di sistem lama.
  */
 router.get('/summary/export', verifyToken, verifyRole(['IT', 'MANAGEMENT']), async (req, res) => {
   try {
-    const { tipe, tanggal1, tanggal2 } = req.query;
+    const { tipe, tanggal1, tanggal2, periode } = req.query;
 
     if (!tipe) return res.status(400).json({ success: false, error: 'Type required' });
 
@@ -350,6 +399,7 @@ router.get('/summary/export', verifyToken, verifyRole(['IT', 'MANAGEMENT']), asy
     }
 
     const todayDate = new Date().toISOString().split('T')[0];
+    const periodeLabel = (periode || 'MONTHLY').toUpperCase();
 
     const sizes = ['10K', '10TK', '11K', '11TK', '12K', '12TK', '13K', '13TK', '1', '1T', '2', '2T', '3', '3T', '4', '4T', '5', '5T', '6', '6T', '7', '7T', '8', '8T', '9', '9T', '10', '10T', '11', '11T', '12', '12T', '13', '13T', '14', '14T', '15', '15T', '16', '16T', '17', '17T', '18', '18T'];
     let pivotSelect = sizes.map((s, i) => `SUM(CASE WHEN size = '${s}' THEN quantity ELSE 0 END) AS [size_${i + 1}]`).join(', ');
@@ -369,29 +419,38 @@ router.get('/summary/export', verifyToken, verifyRole(['IT', 'MANAGEMENT']), asy
 
     if (rawData.length <= 1 && rawData[0].TOTAL === null) return res.status(404).json({ success: false, error: 'No data' });
 
-    const formattedData = rawData.map(row => {
-      const obj = { 'MODEL': row.model, 'COLOR': row.color, 'DESCRIPTION': row.description };
-      sizes.forEach((s, i) => { obj[s] = row[`size_${i + 1}`] || ''; });
-      obj['TOTAL'] = row.TOTAL;
-      return obj;
+    const headers = ['MODEL', 'COLOR', 'DESCRIPTION', ...sizes, 'TOTAL'];
+
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet('Summary Matrix');
+
+    styleTitle(sheet, `SUMMARY ${periodeLabel} ${tipe.toUpperCase()} ${tanggal1} TO ${tanggal2}`, headers.length);
+
+    const dateCell = sheet.getCell(2, 1);
+    dateCell.value = `DATE: ${todayDate}`;
+    dateCell.font = { name: 'Calibri', size: 12, bold: true };
+
+    styleHeaderRow(sheet, 4, headers);
+
+    rawData.forEach((row, idx) => {
+      const r = 5 + idx;
+      styleDataCell(sheet.getCell(r, 1), row.model, false);
+      styleDataCell(sheet.getCell(r, 2), row.color, false);
+      styleDataCell(sheet.getCell(r, 3), row.description, false);
+      sizes.forEach((s, i) => {
+        const val = row[`size_${i + 1}`];
+        styleDataCell(sheet.getCell(r, 4 + i), val || null, false);
+      });
+      styleDataCell(sheet.getCell(r, 4 + sizes.length), row.TOTAL, false);
     });
 
-    const wb = XLSX.utils.book_new();
-    const ws = XLSX.utils.json_to_sheet([]);
+    sheet.columns = [
+      { width: 40 }, { width: 32 }, { width: 25 },
+      ...sizes.map(() => ({ width: 7 })),
+      { width: 10 }
+    ];
 
-    XLSX.utils.sheet_add_aoa(ws, [
-      [`SUMMARY MONTHLY ${tipe.toUpperCase()} ${tanggal1} TO ${tanggal2}`],
-      [`DATE: ${todayDate}`],
-      []
-    ], { origin: 'A1' });
-
-    XLSX.utils.sheet_add_json(ws, formattedData, { origin: 'A4', skipHeader: false });
-
-    ws['!cols'] = [{ wch: 40 }, { wch: 32 }, { wch: 25 }, ...sizes.map(() => ({ wch: 7 })), { wch: 10 }];
-
-    XLSX.utils.book_append_sheet(wb, ws, 'Summary Matrix');
-    const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
-
+    const buffer = await workbook.xlsx.writeBuffer();
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename="Summary_${tipe.toUpperCase()}_${tanggal1}.xlsx"`);
     res.send(buffer);
@@ -402,6 +461,8 @@ router.get('/summary/export', verifyToken, verifyRole(['IT', 'MANAGEMENT']), asy
 
 /**
  * GET /api/reports/hourly/export
+ * ⚠️ BELUM disesuaikan — versi lama (hskpro) formatnya beda total (pivot
+ * per jam, bukan list transaksi). Belum diubah karena belum diminta.
  */
 router.get('/hourly/export', verifyToken, verifyRole(['IT', 'MANAGEMENT']), async (req, res) => {
   try {
@@ -429,24 +490,19 @@ router.get('/hourly/export', verifyToken, verifyRole(['IT', 'MANAGEMENT']), asyn
     const data = result.recordset;
     if (data.length === 0) return res.status(404).json({ success: false, error: 'No data' });
 
-    const wb = XLSX.utils.book_new();
-    const ws = XLSX.utils.json_to_sheet([]);
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet('Hourly Report');
+    const headers = Object.keys(data[0]);
 
-    XLSX.utils.sheet_add_aoa(ws, [
-      [`HOURLY REPORT ${tipe.toUpperCase()} DATE ${tanggal1} to ${tanggal2} TIME ${jam1} to ${jam2}`],
-      [`USERNAME: ${req.user.username}`],
-      []
-    ], { origin: 'A1' });
+    styleTitle(sheet, `HOURLY REPORT ${tipe.toUpperCase()} DATE ${tanggal1} to ${tanggal2} TIME ${jam1} to ${jam2}`, headers.length);
+    styleHeaderRow(sheet, 3, headers);
 
-    XLSX.utils.sheet_add_json(ws, data, { origin: 'A4', skipHeader: false });
+    data.forEach((row, idx) => {
+      const r = 4 + idx;
+      headers.forEach((h, i) => styleDataCell(sheet.getCell(r, i + 1), row[h], false));
+    });
 
-    ws['!cols'] = [
-      { wch: 20 }, { wch: 15 }, { wch: 15 }, { wch: 40 }, { wch: 32 }, { wch: 10 }, { wch: 10 }, { wch: 15 }, { wch: 20 }, { wch: 12 }
-    ];
-
-    XLSX.utils.book_append_sheet(wb, ws, 'Hourly Report');
-    const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
-
+    const buffer = await workbook.xlsx.writeBuffer();
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename=Hourly_Report.xlsx`);
     res.send(buffer);
