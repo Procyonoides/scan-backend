@@ -466,45 +466,76 @@ router.get('/summary/export', verifyToken, verifyRole(['IT', 'MANAGEMENT']), asy
  */
 router.get('/hourly/export', verifyToken, verifyRole(['IT', 'MANAGEMENT']), async (req, res) => {
   try {
-    const { tipe, tanggal1, tanggal2, jam1, jam2 } = req.query;
+    const { tipe, tanggal1, tanggal2 } = req.query;
+    if (!tipe || !tanggal1 || !tanggal2) {
+      return res.status(400).json({ success: false, error: 'tipe, tanggal1 and tanggal2 are required' });
+    }
+
     const tableName = tipe === 'receiving' ? 'data_receiving' : 'data_shipping';
     const liveTableName = tipe === 'receiving' ? 'receiving' : 'shipping';
 
+    // 24 shift-hour buckets: 07:00 on tanggal1 through 06:00-06:59 on tanggal2
+    const hourLabels = [];
+    const hourCaseParts = [];
+    for (let i = 0; i < 24; i++) {
+      const hour = (7 + i) % 24;
+      const day = (7 + i) < 24 ? tanggal1 : tanggal2;
+      const hourStr = String(hour).padStart(2, '0');
+      hourLabels.push(`HOUR ${hourStr}`);
+      hourCaseParts.push(
+        `SUM(CASE WHEN date_time BETWEEN '${day} ${hourStr}:00:00' AND '${day} ${hourStr}:59:59' THEN quantity ELSE 0 END) as [HOUR ${hourStr}]`
+      );
+    }
+
     const result = await query(`
-      SELECT 
-        CONVERT(varchar, date_time, 120) as [DATE/TIME],
-        production as [PRODUCTION],
-        brand as [BRAND],
-        model as [MODEL],
-        color as [COLOR],
-        size as [SIZE],
-        quantity as [QUANTITY],
-        username as [USERNAME],
-        description as [DESCRIPTION],
-        scan_no as [SCAN NO]
-      FROM (SELECT * FROM [${dbName}].[dbo].[${tableName}] UNION ALL SELECT * FROM [${dbName}].[dbo].[${liveTableName}]) AS combined_t
-      WHERE date_time >= @start AND date_time <= @end
-      ORDER BY date_time DESC
-    `, { start: `${tanggal1} ${jam1}`, end: `${tanggal2} ${jam2}` });
+      SELECT item, ${hourCaseParts.join(', ')}, SUM(quantity) as TOTAL
+      FROM (SELECT * FROM [${dbName}].[dbo].[${tableName}] WHERE date_time BETWEEN @start AND @end
+            UNION ALL
+            SELECT * FROM [${dbName}].[dbo].[${liveTableName}] WHERE date_time BETWEEN @start AND @end) AS combined_t
+      WHERE production = 'PT HSK REMBANG'
+      GROUP BY item
+      ORDER BY item ASC
+    `, { start: `${tanggal1} 07:00:00`, end: `${tanggal2} 06:59:59` });
 
     const data = result.recordset;
     if (data.length === 0) return res.status(404).json({ success: false, error: 'No data' });
 
-    const workbook = new ExcelJS.Workbook();
-    const sheet = workbook.addWorksheet('Hourly Report');
-    const headers = Object.keys(data[0]);
+    // Grand total row, summed across all departments/items
+    const grandTotalRow = { item: 'GRAND TOTAL' };
+    hourLabels.forEach(h => { grandTotalRow[h] = data.reduce((sum, r) => sum + (parseInt(r[h]) || 0), 0); });
+    grandTotalRow.TOTAL = data.reduce((sum, r) => sum + (parseInt(r.TOTAL) || 0), 0);
 
-    styleTitle(sheet, `HOURLY REPORT ${tipe.toUpperCase()} DATE ${tanggal1} to ${tanggal2} TIME ${jam1} to ${jam2}`, headers.length);
-    styleHeaderRow(sheet, 3, headers);
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet('Hourly Report');
+
+    const columns = ['ITEM', ...hourLabels, 'TOTAL'];
+    ws.columns = [{ width: 18 }, ...hourLabels.map(() => ({ width: 10 })), { width: 12 }];
+
+    styleTitle(ws, `HOURLY ${tipe.toUpperCase()} DATE ${tanggal1} to ${tanggal2}`, columns.length);
+    styleHeaderRow(ws, 3, columns);
 
     data.forEach((row, idx) => {
       const r = 4 + idx;
-      headers.forEach((h, i) => styleDataCell(sheet.getCell(r, i + 1), row[h], false));
+      styleDataCell(ws.getCell(r, 1), row.item, false);
+      hourLabels.forEach((h, i) => styleDataCell(ws.getCell(r, i + 2), row[h] || 0, true));
+      styleDataCell(ws.getCell(r, columns.length), row.TOTAL, true);
     });
 
-    const buffer = await workbook.xlsx.writeBuffer();
+    const footerRow = 4 + data.length;
+    styleDataCell(ws.getCell(footerRow, 1), 'GRAND TOTAL', false);
+    ws.getCell(footerRow, 1).font = { bold: true };
+    hourLabels.forEach((h, i) => {
+      const cell = ws.getCell(footerRow, i + 2);
+      styleDataCell(cell, grandTotalRow[h], true);
+      cell.font = { bold: true };
+    });
+    const totalCell = ws.getCell(footerRow, columns.length);
+    styleDataCell(totalCell, grandTotalRow.TOTAL, true);
+    totalCell.font = { bold: true };
+
+    const buffer = await wb.xlsx.writeBuffer();
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-    res.setHeader('Content-Disposition', `attachment; filename=Hourly_Report.xlsx`);
+    res.setHeader('Content-Disposition', `attachment; filename=Hourly_${tipe.toUpperCase()}_${tanggal1}.xlsx`);
     res.send(buffer);
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
