@@ -3,7 +3,36 @@ const router = express.Router();
 const { query, dbName } = require('../config/database');
 const { verifyToken, verifyRole } = require('../middleware/auth.middleware');
 const { getWarehouseStats } = require('../utils/warehouseStats');
-const XLSX = require('xlsx');
+const ExcelJS = require('exceljs');
+
+const HEADER_FILL = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD3D3D3' } };
+const THIN_BORDER = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } };
+
+function styleTitle(sheet, text, colCount) {
+  sheet.mergeCells(1, 1, 1, colCount);
+  const cell = sheet.getCell(1, 1);
+  cell.value = text;
+  cell.font = { name: 'Calibri', size: 14, bold: true };
+  cell.alignment = { horizontal: 'center', vertical: 'middle' };
+}
+
+function styleHeaderRow(sheet, rowNum, headers) {
+  headers.forEach((h, i) => {
+    const cell = sheet.getCell(rowNum, i + 1);
+    cell.value = h;
+    cell.font = { name: 'Calibri', size: 11, bold: true };
+    cell.alignment = { horizontal: 'center', vertical: 'middle' };
+    cell.fill = HEADER_FILL;
+    cell.border = THIN_BORDER;
+  });
+}
+
+function styleDataCell(cell, value, center) {
+  cell.value = value;
+  cell.font = { name: 'Calibri', size: 12 };
+  cell.border = THIN_BORDER;
+  if (center) cell.alignment = { horizontal: 'center', vertical: 'middle' };
+}
 
 router.get('/history', verifyToken, async (req, res) => {
   try {
@@ -217,29 +246,32 @@ router.get('/print-detail', verifyToken, async (req, res) => {
     if (data.length === 0) return res.status(404).json({ success: false, error: 'No data' });
 
     const subtotal = data.reduce((sum, item) => sum + (parseInt(item.QUANTITY) || 0), 0);
-    const wb = XLSX.utils.book_new();
-    const ws = XLSX.utils.json_to_sheet([]);
 
-    XLSX.utils.sheet_add_aoa(ws, [
-      [`DETAIL SHIPPING DATE ${today} TIME ${nowTime}`],
-      [`USERNAME: ${username}`],
-      []
-    ], { origin: 'A1' });
-
-    XLSX.utils.sheet_add_json(ws, data, { origin: 'A4', skipHeader: false });
-
-    XLSX.utils.sheet_add_aoa(ws, [
-      ['GRAND TOTAL', null, null, null, null, null, null, null, null, null, subtotal]
-    ], { origin: `A${data.length + 5}` });
-
-    ws['!cols'] = [
-      { wch: 12 }, { wch: 20 }, { wch: 15 }, { wch: 15 }, { wch: 35 },
-      { wch: 20 }, { wch: 25 }, { wch: 10 }, { wch: 15 }, { wch: 20 }, { wch: 10 }
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet('Shipping Detail');
+    const columns = ['SCAN NO', 'DATE/TIME', 'PRODUCTION', 'BRAND', 'MODEL', 'ITEM', 'COLOR', 'SIZE', 'USERNAME', 'DESCRIPTION', 'QUANTITY'];
+    ws.columns = [
+      { width: 12 }, { width: 20 }, { width: 15 }, { width: 15 }, { width: 35 },
+      { width: 20 }, { width: 25 }, { width: 10 }, { width: 15 }, { width: 20 }, { width: 10 }
     ];
 
-    XLSX.utils.book_append_sheet(wb, ws, 'Shipping Detail');
-    const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+    styleTitle(ws, `DETAIL SHIPPING DATE ${today} TIME ${nowTime}`, columns.length);
+    ws.getCell(2, 1).value = `USERNAME: ${username}`;
+    styleHeaderRow(ws, 3, columns);
 
+    data.forEach((row, idx) => {
+      const r = 4 + idx;
+      columns.forEach((col, i) => styleDataCell(ws.getCell(r, i + 1), row[col], col === 'SCAN NO' || col === 'SIZE' || col === 'QUANTITY'));
+    });
+
+    const footerRow = 4 + data.length;
+    styleDataCell(ws.getCell(footerRow, 1), 'GRAND TOTAL', false);
+    ws.getCell(footerRow, 1).font = { bold: true };
+    const totalCell = ws.getCell(footerRow, columns.length);
+    styleDataCell(totalCell, subtotal, true);
+    totalCell.font = { bold: true };
+
+    const buffer = await wb.xlsx.writeBuffer();
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename="Shipping_Detail_${today}.xlsx"`);
     res.send(buffer);
@@ -277,34 +309,32 @@ router.get('/print-summary', verifyToken, async (req, res) => {
 
     if (rawData.length <= 1 && rawData[0].TOTAL === null) return res.status(404).json({ success: false, error: 'No data' });
 
-    const formattedData = rawData.map(row => {
-      const obj = { 'MODEL': row.model, 'COLOR': row.color, 'DESCRIPTION': row.description };
-      sizes.forEach((s, i) => { obj[s] = row[`size_${i + 1}`] || ''; });
-      obj['TOTAL'] = row.TOTAL;
-      return obj;
+    const formattedRows = rawData.map(row => {
+      const rowArr = [row.model, row.color, row.description];
+      sizes.forEach((s, i) => rowArr.push(row[`size_${i + 1}`] || ''));
+      rowArr.push(row.TOTAL);
+      return rowArr;
     });
 
-    const wb = XLSX.utils.book_new();
-    const ws = XLSX.utils.json_to_sheet([]);
-
-    XLSX.utils.sheet_add_aoa(ws, [
-      [`SUMMARY SHIPPING DATE ${today} TIME ${nowTime}`],
-      [`USERNAME: ${username}`],
-      []
-    ], { origin: 'A1' });
-
-    XLSX.utils.sheet_add_json(ws, formattedData, { origin: 'A4', skipHeader: false });
-
-    // Precise widths based on HSKPro px
-    ws['!cols'] = [
-      { wch: 40 }, { wch: 32 }, { wch: 25 }, // Model, Color, Desc
-      ...sizes.map(() => ({ wch: 7 })),      // Sizes
-      { wch: 10 }                            // Total
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet('Shipping Summary');
+    const columns = ['MODEL', 'COLOR', 'DESCRIPTION', ...sizes, 'TOTAL'];
+    ws.columns = [
+      { width: 40 }, { width: 32 }, { width: 25 },
+      ...sizes.map(() => ({ width: 7 })),
+      { width: 10 }
     ];
 
-    XLSX.utils.book_append_sheet(wb, ws, 'Shipping Summary');
-    const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+    styleTitle(ws, `SUMMARY SHIPPING DATE ${today} TIME ${nowTime}`, columns.length);
+    ws.getCell(2, 1).value = `USERNAME: ${username}`;
+    styleHeaderRow(ws, 3, columns);
 
+    formattedRows.forEach((rowArr, idx) => {
+      const r = 4 + idx;
+      rowArr.forEach((val, i) => styleDataCell(ws.getCell(r, i + 1), val, i >= 3));
+    });
+
+    const buffer = await wb.xlsx.writeBuffer();
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename="Shipping_Summary_${today}.xlsx"`);
     res.send(buffer);

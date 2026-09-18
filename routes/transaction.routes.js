@@ -1,7 +1,37 @@
 const express = require('express');
 const router = express.Router();
+const ExcelJS = require('exceljs');
 const { query, dbName } = require('../config/database');
 const { verifyToken, verifyRole } = require('../middleware/auth.middleware');
+
+const HEADER_FILL = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD3D3D3' } };
+const THIN_BORDER = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } };
+
+function styleTitle(sheet, text, colCount) {
+  sheet.mergeCells(1, 1, 1, colCount);
+  const cell = sheet.getCell(1, 1);
+  cell.value = text;
+  cell.font = { name: 'Calibri', size: 14, bold: true };
+  cell.alignment = { horizontal: 'center', vertical: 'middle' };
+}
+
+function styleHeaderRow(sheet, rowNum, headers) {
+  headers.forEach((h, i) => {
+    const cell = sheet.getCell(rowNum, i + 1);
+    cell.value = h;
+    cell.font = { name: 'Calibri', size: 11, bold: true };
+    cell.alignment = { horizontal: 'center', vertical: 'middle' };
+    cell.fill = HEADER_FILL;
+    cell.border = THIN_BORDER;
+  });
+}
+
+function styleDataCell(cell, value, center) {
+  cell.value = value;
+  cell.font = { name: 'Calibri', size: 12 };
+  cell.border = THIN_BORDER;
+  if (center) cell.alignment = { horizontal: 'center', vertical: 'middle' };
+}
 
 /**
  * GET /api/transactions
@@ -290,7 +320,6 @@ router.get('/export/excel', verifyToken, verifyRole(['IT', 'MANAGEMENT']), async
 
     const result = await query(`
       SELECT 
-        no,
         stock_awal,
         receiving,
         shipping,
@@ -300,17 +329,31 @@ router.get('/export/excel', verifyToken, verifyRole(['IT', 'MANAGEMENT']), async
       ORDER BY date ASC
     `);
 
-    // Simple CSV export (dapat diganti dengan library Excel seperti exceljs)
-    const csv = [
-      'NO,DATE/TIME,FIRST STOCK,RECEIVING,SHIPPING,WAREHOUSE STOCK',
-      ...result.recordset.map(row =>
-        `${row.no},${row.date},${row.stock_awal},${row.receiving},${row.shipping},${row.stock_akhir}`
-      )
-    ].join('\n');
+    const data = result.recordset;
+    if (data.length === 0) return res.status(404).json({ success: false, error: 'No data' });
 
-    res.setHeader('Content-Type', 'text/csv');
-    res.setHeader('Content-Disposition', `attachment; filename=Transaction_${new Date().toISOString().slice(0, 10)}.csv`);
-    res.send(csv);
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet('Transaction');
+
+    const columns = ['DATE/TIME', 'FIRST STOCK', 'RECEIVING', 'SHIPPING', 'WAREHOUSE STOCK'];
+    ws.columns = [{ width: 15 }, { width: 15 }, { width: 15 }, { width: 15 }, { width: 18 }];
+
+    styleTitle(ws, 'TRANSACTION', columns.length);
+    styleHeaderRow(ws, 3, columns);
+
+    data.forEach((row, idx) => {
+      const r = 4 + idx;
+      styleDataCell(ws.getCell(r, 1), row.date, false);
+      styleDataCell(ws.getCell(r, 2), row.stock_awal, true);
+      styleDataCell(ws.getCell(r, 3), row.receiving, true);
+      styleDataCell(ws.getCell(r, 4), row.shipping, true);
+      styleDataCell(ws.getCell(r, 5), row.stock_akhir, true);
+    });
+
+    const buffer = await wb.xlsx.writeBuffer();
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename=Transaction_${new Date().toISOString().slice(0, 10)}.xlsx`);
+    res.send(buffer);
 
     console.log('✅ Excel export completed');
   } catch (err) {
