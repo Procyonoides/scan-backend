@@ -160,6 +160,8 @@ router.put('/:id', verifyToken, async (req, res) => {
     const parts = id.split('|');
     if (parts.length !== 3) return res.status(400).json({ success: false, error: 'Invalid ID' });
     await query(`UPDATE [${dbName}].[dbo].[shipping] SET original_barcode=@original_barcode, brand=@brand, color=@color, size=@size, four_digit=@four_digit, unit=@unit, quantity=@quantity, production=@production, model=@model, model_code=@model_code, item=@item, description=@description WHERE date_time=@date_time AND scan_no=@scan_no AND username=@username`, { original_barcode, brand, color, size, four_digit, unit, quantity, production, model, model_code, item, description, date_time: parts[0], scan_no: parts[1], username: parts[2] });
+    const io = req.app.get('io');
+    if (io) io.emit('dashboard:update', { type: 'SHIPPING_EDIT', username: req.user.username, timestamp: new Date().toISOString() });
     res.json({ success: true, message: 'Updated' });
   } catch (err) {
     res.status(500).json({ success: false, message: 'Error', details: err.message });
@@ -175,6 +177,11 @@ router.delete('/:id', verifyToken, async (req, res) => {
     if (scanData.recordset.length === 0) return res.status(404).json({ success: false, message: 'Not found' });
     await query(`UPDATE [${dbName}].[dbo].[master_database] SET stock=stock+@quantity WHERE original_barcode=@barcode`, { quantity: scanData.recordset[0].quantity, barcode: scanData.recordset[0].original_barcode });
     await query(`DELETE FROM [${dbName}].[dbo].[shipping] WHERE date_time=@date_time AND scan_no=@scan_no AND username=@username`, { date_time: parts[0], scan_no: parts[1], username: parts[2] });
+    const io = req.app.get('io');
+    if (io) {
+      const stats = await getWarehouseStats(query, dbName);
+      io.emit('dashboard:update', { type: 'SHIPPING_DELETE', username: req.user.username, ...stats, timestamp: new Date().toISOString() });
+    }
     res.json({ success: true, message: 'Deleted' });
   } catch (err) {
     res.status(500).json({ success: false, message: 'Error', details: err.message });
@@ -193,6 +200,13 @@ router.post('/batch-delete', verifyToken, verifyRole(['IT']), async (req, res) =
         await query(`UPDATE [${dbName}].[dbo].[master_database] SET stock=stock+@quantity WHERE original_barcode=@barcode`, { quantity: scanData.recordset[0].quantity, barcode: scanData.recordset[0].original_barcode });
         await query(`DELETE FROM [${dbName}].[dbo].[shipping] WHERE date_time=@date_time AND scan_no=@scan_no AND username=@username`, { date_time: parts[0], scan_no: parts[1], username: parts[2] });
         successCount++;
+      }
+    }
+    if (successCount > 0) {
+      const io = req.app.get('io');
+      if (io) {
+        const stats = await getWarehouseStats(query, dbName);
+        io.emit('dashboard:update', { type: 'SHIPPING_DELETE', username: req.user.username, ...stats, timestamp: new Date().toISOString() });
       }
     }
     res.json({ success: true, message: `${successCount} deleted` });

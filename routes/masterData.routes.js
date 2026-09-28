@@ -1123,6 +1123,45 @@ router.post('/backup', verifyToken, verifyRole(['IT']), async (req, res) => {
 });
 
 /**
+ * POST /api/master-data/database-backup
+ * Full SQL Server native backup (.bak) - restorable via SSMS or RESTORE
+ * DATABASE. Saved to the SQL Server instance's own default backup folder,
+ * NOT downloaded through the browser (kept local, per design decision).
+ */
+router.post('/database-backup', verifyToken, verifyRole(['IT']), async (req, res) => {
+  try {
+    // SQL Server's own default backup folder for this instance (confirmed
+    // via SERVERPROPERTY('InstanceDefaultBackupPath')). Written by SQL
+    // Server itself, not by Node - it just needs to be a path that SQL
+    // Server's own service account can already write to.
+    const backupFolder = 'C:\\Program Files\\Microsoft SQL Server\\MSSQL16.SQLEXPRESS\\MSSQL\\Backup';
+
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const fileName = `${dbName}_${timestamp}.bak`;
+    const fullPath = `${backupFolder}\\${fileName}`;
+
+    console.log(`💾 Starting full database backup to ${fullPath}`);
+
+    await query(
+      `BACKUP DATABASE [${dbName}] TO DISK = @path WITH FORMAT, INIT, NAME = @name`,
+      { path: fullPath, name: `${dbName}-Full Backup` }
+    );
+
+    console.log(`✅ Database backup completed: ${fileName}`);
+
+    res.json({
+      success: true,
+      message: `Backup database berhasil: ${fileName}`,
+      fileName,
+      path: fullPath
+    });
+  } catch (err) {
+    console.error('❌ Database backup error:', err);
+    res.status(500).json({ success: false, error: 'Database backup failed', message: err.message });
+  }
+});
+
+/**
  * POST /api/master-data/duplicate
  * Remove duplicate records from data_receiving or data_shipping (IT only)
  */

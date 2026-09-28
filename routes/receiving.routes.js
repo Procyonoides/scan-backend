@@ -184,6 +184,11 @@ router.put('/:id', verifyToken, async (req, res) => {
     const [date_time, scan_no, original_username] = parts;
     if (req.user.position !== 'IT' && username !== original_username) return res.status(403).json({ success: false, error: 'Unauthorized' });
     await query(`UPDATE [${dbName}].[dbo].[receiving] SET original_barcode=@original_barcode, brand=@brand, color=@color, size=@size, four_digit=@four_digit, unit=@unit, quantity=@quantity, production=@production, model=@model, model_code=@model_code, item=@item, description=@description WHERE date_time=@date_time AND scan_no=@scan_no AND username=@original_username`, { original_barcode, brand: brand || '', color: color || '', size: size || '', four_digit: four_digit || '', unit: unit || '', quantity: parseInt(quantity) || 0, production: production || '', model: model || '', model_code: model_code || '', item: item || '', description: description || '', date_time, scan_no: parseInt(scan_no), original_username });
+    const io = req.app.get('io');
+    if (io) {
+      const stats = await getWarehouseStats(query, dbName);
+      io.emit('dashboard:update', { type: 'RECEIVING_EDIT', username: req.user.username, ...stats, timestamp: new Date().toISOString() });
+    }
     res.json({ success: true, message: 'Data Berhasil Diperbarui' });
   } catch (err) {
     res.status(500).json({ success: false, error: 'Failed to edit receiving scan', message: err.message });
@@ -203,6 +208,11 @@ router.delete('/:id', verifyToken, async (req, res) => {
     const { quantity, original_barcode: barcode } = scanData.recordset[0];
     await query(`UPDATE [${dbName}].[dbo].[master_database] SET stock=stock-@quantity WHERE original_barcode=@barcode`, { quantity, barcode });
     await query(`DELETE FROM [${dbName}].[dbo].[receiving] WHERE date_time=@date_time AND scan_no=@scan_no AND username=@original_username`, { date_time, scan_no: parseInt(scan_no), original_username });
+    const io = req.app.get('io');
+    if (io) {
+      const stats = await getWarehouseStats(query, dbName);
+      io.emit('dashboard:update', { type: 'RECEIVING_DELETE', username: req.user.username, ...stats, timestamp: new Date().toISOString() });
+    }
     res.json({ success: true, message: 'Data Berhasil Dihapus' });
   } catch (err) {
     res.status(500).json({ success: false, error: 'Failed to delete receiving scan', message: err.message });
@@ -229,6 +239,13 @@ router.post('/batch-delete', verifyToken, verifyRole(['IT']), async (req, res) =
       } catch (err) {
         console.error(`❌ Batch delete failed for id ${id}:`, err.message);
         failed.push({ id, reason: err.message });
+      }
+    }
+    if (successCount > 0) {
+      const io = req.app.get('io');
+      if (io) {
+        const stats = await getWarehouseStats(query, dbName);
+        io.emit('dashboard:update', { type: 'RECEIVING_DELETE', username: req.user.username, ...stats, timestamp: new Date().toISOString() });
       }
     }
     res.json({ success: true, message: `Batch delete completed: ${successCount} scans deleted`, failedCount: failed.length, failed });
