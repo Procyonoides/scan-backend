@@ -879,7 +879,7 @@ async function findRecordLocation(type, dateTime, scanNo, username, queryFn = qu
  */
 router.get('/records', verifyToken, verifyRole(['IT', 'MANAGEMENT']), async (req, res) => {
   try {
-    const { type, startDate, endDate, username, scanNo, page = 1, limit = 50 } = req.query;
+    const { type, startDate, endDate, username, scanNo, search, page = 1, limit = 50 } = req.query;
 
     if (!type || !['receiving', 'shipping'].includes(type)) {
       return res.status(400).json({ success: false, error: 'Invalid record type' });
@@ -916,6 +916,15 @@ router.get('/records', verifyToken, verifyRole(['IT', 'MANAGEMENT']), async (req
     if (scanNo) {
       whereClause += ` AND scan_no = @scanNo`;
       params.scanNo = scanNo;
+    }
+
+    if (search && search.trim()) {
+      whereClause += ` AND (
+        original_barcode LIKE @search OR model LIKE @search OR color LIKE @search
+        OR size LIKE @search OR username LIKE @search OR description LIKE @search
+        OR CAST(scan_no AS varchar(20)) LIKE @search
+      )`;
+      params.search = `%${search.trim()}%`;
     }
 
     // 1. Get total count
@@ -1070,6 +1079,71 @@ router.delete('/record', verifyToken, verifyRole(['IT']), async (req, res) => {
   } catch (err) {
     console.error('Delete record error:', err);
     res.status(500).json({ success: false, error: 'Failed to delete record', message: err.message });
+  }
+});
+
+/**
+ * POST /api/master-data/record/batch-delete
+ * Delete multiple transaction records at once (IT only)
+ */
+router.post('/record/batch-delete', verifyToken, verifyRole(['IT']), async (req, res) => {
+  try {
+    const { items } = req.body;
+
+    if (!Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ success: false, error: 'No records specified' });
+    }
+
+    let successCount = 0;
+    let failCount = 0;
+
+    for (const item of items) {
+      const { type, dateTime, scanNo, username } = item;
+      if (!type || !['receiving', 'shipping'].includes(type) || !dateTime || !scanNo || !username) {
+        failCount++;
+        continue;
+      }
+
+      try {
+        const result = await runInTransaction(async (txQuery) => {
+          const found = await findRecordLocation(type, dateTime, scanNo, username, txQuery);
+          if (!found) return { notFound: true };
+
+          await txQuery(`
+            DELETE FROM [${dbName}].[dbo].[${found.table}]
+            WHERE date_time = @dateTime AND scan_no = @scanNo AND username = @username
+          `, { dateTime, scanNo: parseInt(scanNo), username });
+
+          const stockAdjustment = type === 'receiving' ? -found.quantity : found.quantity;
+          await txQuery(`
+            UPDATE [${dbName}].[dbo].[master_database]
+            SET stock = stock + @stockAdjustment
+            WHERE original_barcode = @barcode
+          `, { stockAdjustment, barcode: found.original_barcode });
+
+          return { notFound: false };
+        });
+
+        if (result.notFound) failCount++;
+        else successCount++;
+      } catch (itemErr) {
+        console.error('Batch delete item error:', itemErr);
+        failCount++;
+      }
+    }
+
+    console.log(`✅ Batch delete records: ${successCount} deleted, ${failCount} failed`);
+
+    res.json({
+      success: true,
+      message: `${successCount} record(s) deleted${failCount > 0 ? `, ${failCount} failed` : ''}`,
+      successCount,
+      failCount
+    });
+
+  } catch (err) {
+    console.error('Batch delete records error:', err);
+    res.status(500).json({ success: false, error: 'Failed to batch delete records', message: err.message });
   }
 });
 
