@@ -6,6 +6,7 @@ const multer = require('multer');
 const XLSX = require('xlsx');
 const { normalizeImportRows } = require('../utils/headerNormalizer');
 const { runInTransaction } = require('../utils/transaction');
+const ExcelJS = require('exceljs');
 
 /**
  * GET /api/master-data/barcodes
@@ -1275,6 +1276,121 @@ router.post('/duplicate', verifyToken, verifyRole(['IT']), async (req, res) => {
   } catch (err) {
     console.error('Duplicate error:', err);
     res.status(500).json({ success: false, error: 'Deduplication failed', message: err.message });
+  }
+});
+
+/**
+ * GET /api/master-data/format-excel
+ * Download template Excel untuk import barcode, formatnya disesuaikan
+ * dengan assets/uploads/format.xlsx di sistem lama (hskpro).
+ */
+router.get('/format-excel', verifyToken, verifyRole(['IT']), async (req, res) => {
+  try {
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet('Format');
+
+    sheet.columns = [
+      { header: 'original barcode', key: 'original_barcode', width: 15.4 },
+      { header: 'brand', key: 'brand', width: 6.1 },
+      { header: 'color', key: 'color', width: 5.4 },
+      { header: 'label size', key: 'label_size', width: 9.3 },
+      { header: 'four digit', key: 'four_digit', width: 9.1 },
+      { header: 'unit', key: 'unit', width: 4.6 },
+      { header: 'quantity', key: 'quantity', width: 8.4 },
+      { header: 'production', key: 'production', width: 10.7 },
+      { header: 'model', key: 'model', width: 6.7 },
+      { header: 'model code', key: 'model_code', width: 11.4 },
+      { header: 'item', key: 'item', width: 5.1 },
+      { header: 'user', key: 'user', width: 4.9 },
+      { header: 'date', key: 'date', width: 5.0 },
+      { header: 'stock', key: 'stock', width: 5.6 }
+    ];
+
+    sheet.getRow(1).font = { bold: true };
+
+    const buffer = await workbook.xlsx.writeBuffer();
+
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', 'attachment; filename=Format_Import_Master_Data.xlsx');
+    res.send(buffer);
+
+  } catch (err) {
+    console.error('Format Excel export error:', err);
+    res.status(500).json({ success: false, error: 'Failed to generate format Excel', message: err.message });
+  }
+});
+
+/**
+ * GET /api/master-data/export
+ * Export semua data master_database ke Excel, mirip print_master_data
+ * di sistem lama (hskpro), lengkap dengan baris GRAND TOTAL stock.
+ */
+router.get('/export', verifyToken, verifyRole(['IT', 'MANAGEMENT']), async (req, res) => {
+  try {
+    const result = await query(`
+      SELECT original_barcode, brand, color, size, four_digit, unit, quantity,
+             production, model, model_code, item, username, date_time, stock
+      FROM [${dbName}].[dbo].[master_database]
+      ORDER BY original_barcode
+    `);
+
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', 'attachment; filename=Master_Data.xlsx');
+
+    const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({ stream: res, useStyles: true });
+    const sheet = workbook.addWorksheet('Master Data');
+
+    sheet.mergeCells(1, 1, 1, 14);
+    const titleCell = sheet.getCell(1, 1);
+    titleCell.value = 'MASTER DATA';
+    titleCell.font = { bold: true, size: 14 };
+    titleCell.alignment = { horizontal: 'center' };
+    sheet.getRow(1).commit();
+
+    sheet.getRow(2).commit(); // baris kosong pemisah
+
+    const headerRow = sheet.getRow(3);
+    headerRow.values = [
+      'ORIGINAL BARCODE', 'BRAND', 'COLOR', 'SIZE', 'FOUR DIGIT', 'UNIT', 'QUANTITY',
+      'PRODUCTION', 'MODEL', 'MODEL CODE', 'ITEM', 'USERNAME', 'DATE/TIME', 'STOCK'
+    ];
+    headerRow.font = { bold: true };
+    headerRow.commit();
+
+    let subtotal = 0;
+    let rowNum = 4;
+    for (const row of result.recordset) {
+      subtotal += row.stock || 0;
+      const r = sheet.getRow(rowNum++);
+      r.values = [
+        row.original_barcode, row.brand, row.color, row.size, row.four_digit, row.unit,
+        row.quantity, row.production, row.model, row.model_code, row.item, row.username,
+        row.date_time, row.stock
+      ];
+      r.commit();
+    }
+
+    const totalRow = sheet.getRow(rowNum);
+    sheet.mergeCells(rowNum, 1, rowNum, 13);
+    totalRow.getCell(1).value = 'GRAND TOTAL';
+    totalRow.getCell(1).font = { bold: true };
+    totalRow.getCell(1).alignment = { horizontal: 'center' };
+    totalRow.getCell(14).value = subtotal;
+    totalRow.getCell(14).font = { bold: true };
+    totalRow.commit();
+
+    sheet.columns.forEach(col => { col.width = 15; });
+
+    await sheet.commit();
+    await workbook.commit();
+
+  } catch (err) {
+    console.error('Export master data error:', err);
+    if (!res.headersSent) {
+      res.status(500).json({ success: false, error: 'Failed to export master data', message: err.message });
+    } else {
+      res.end();
+    }
   }
 });
 
